@@ -25,13 +25,10 @@
         const { useState, useEffect, useRef, useCallback } = React;
 
         // 当前应用版本
-        const APP_VERSION = "1.7.1";
+        const APP_VERSION = "1.7.2";
         const apiKey = ""; 
         const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
 
-        /**
-         * SVG 图标组件
-         */
         const Icon = ({ name, size = 24, className = "" }) => {
             const icons = {
                 Play: <path d="m5 3 14 9-14 9V3z"/>,
@@ -70,19 +67,15 @@
             const [settings, setSettings] = useState({
                 inhale: 4, hold: 0, exhale: 4,
                 soundEnabled: true, volume: 0.4, 
-                bgType: 'none',             // 默认：无背景音乐
-                transitionSound: 'qing',    // 默认：颂钵音效
+                bgType: 'none',             
+                transitionSound: 'qing',    
                 vibrationEnabled: true,
-                runMode: 'background',      // 默认：锁屏存活优化
+                runMode: 'background',      
                 apiProxyUrl: DEFAULT_BASE_URL 
             });
             const [elapsedTime, setElapsedTime] = useState(0);
             const [displayProgress, setDisplayProgress] = useState(0); 
             const [showSettings, setShowSettings] = useState(false);
-            const [showAI, setShowAI] = useState(false);
-            const [userMood, setUserMood] = useState("");
-            const [isAIThinking, setIsAIThinking] = useState(false);
-            const [aiSuggestion, setAiSuggestion] = useState(null);
 
             const audioCtxRef = useRef(null);
             const windGainRef = useRef(null);
@@ -91,93 +84,166 @@
             const bgBrownGainRef = useRef(null);
             const bgFilterRef = useRef(null);
             const windFilterRef = useRef(null);
-            const silentNodeRef = useRef(null); // 静音轨道节点
+            const keepAliveNodeRef = useRef(null);
             const animationFrameRef = useRef(null);
-            const cycleStartTimeRef = useRef(null);
-            const wakeLockRef = useRef(null);
+            
+            // 核心引用：用于锁屏调度的时钟逻辑
+            const nextScheduleTimeRef = useRef(0);
+            const lastScheduledPhaseRef = useRef('');
+            const cycleStartTimeAudioRef = useRef(0); // 基准音频时间
             
             const isActiveRef = useRef(isActive);
             useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
 
-            // --- 核心修复：屏幕唤醒锁 ---
-            const requestWakeLock = async () => {
-                if ('wakeLock' in navigator && settings.runMode === 'wakelock') {
-                    try { wakeLockRef.current = await navigator.wakeLock.request('screen'); } catch (err) {}
-                }
-            };
-            const releaseWakeLock = () => {
-                if (wakeLockRef.current) { wakeLockRef.current.release().then(() => { wakeLockRef.current = null; }); }
-            };
-
-            useEffect(() => {
-                if (isActive && settings.runMode === 'wakelock') requestWakeLock();
-                else releaseWakeLock();
-                return () => releaseWakeLock();
-            }, [isActive, settings.runMode]);
-
-            // --- 核心修复：锁屏存活逻辑 (通过维持静音音频流实现) ---
-            const startKeepAliveAudio = () => {
-                if (!audioCtxRef.current) return;
+            // --- 预加载调度函数 (木鱼/颂钵声音) ---
+            const scheduleTransitionSound = useCallback((time) => {
+                if (settings.transitionSound === 'none' || !audioCtxRef.current) return;
                 const ctx = audioCtxRef.current;
-                // 创建一个极小的静音缓冲区并循环播放，防止 iOS 挂起 JS 进程
-                const buffer = ctx.createBuffer(1, 1, 22050);
-                const source = ctx.createBufferSource();
-                source.buffer = buffer;
-                source.loop = true;
-                const gain = ctx.createGain();
-                gain.gain.value = 0.01; // 近乎无声
-                source.connect(gain);
-                gain.connect(ctx.destination);
-                source.start();
-                silentNodeRef.current = source;
-            };
-
-            const stopKeepAliveAudio = () => {
-                if (silentNodeRef.current) {
-                    try { silentNodeRef.current.stop(); } catch(e) {}
-                    silentNodeRef.current = null;
-                }
-            };
-
-            // --- 转折音效触发 ---
-            const triggerTransitionSound = useCallback(() => {
-                if (settings.transitionSound === 'none' || !audioCtxRef.current || audioCtxRef.current.state !== 'running') return;
-                const ctx = audioCtxRef.current;
-                const now = ctx.currentTime;
                 const vol = settings.volume;
-                if (settings.vibrationEnabled && "vibrate" in navigator) navigator.vibrate(30);
 
-                const createTone = (freq, duration) => {
-                    const osc = ctx.createOscillator(); const gain = ctx.createGain();
-                    osc.type = 'sine'; osc.frequency.setValueAtTime(freq, now);
-                    gain.gain.setValueAtTime(vol * 0.5, now);
-                    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
-                    osc.connect(gain); gain.connect(ctx.destination);
-                    osc.start(now); osc.stop(now + duration);
+                const createTone = (freq, duration, targetTime) => {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(freq, targetTime);
+                    gain.gain.setValueAtTime(0, targetTime);
+                    gain.gain.linearRampToValueAtTime(vol * 0.5, targetTime + 0.002);
+                    gain.gain.exponentialRampToValueAtTime(0.001, targetTime + duration);
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start(targetTime);
+                    osc.stop(targetTime + duration);
                 };
 
-                switch (settings.transitionSound) {
-                    case 'muyu': createTone(750, 0.12); break;
-                    case 'qing': // 颂钵
-                        const qOsc = ctx.createOscillator(); const qGain = ctx.createGain();
-                        qOsc.frequency.setValueAtTime(220, now); qOsc.frequency.exponentialRampToValueAtTime(218, now + 1.5);
-                        qGain.gain.setValueAtTime(vol * 0.4, now); qGain.gain.exponentialRampToValueAtTime(0.001, now + 2.0);
-                        qOsc.connect(qGain); qGain.connect(ctx.destination);
-                        qOsc.start(now); qOsc.stop(now + 2.0);
-                        break;
-                    case 'drop': 
-                        const dO = ctx.createOscillator(); const dG = ctx.createGain();
-                        dO.frequency.setValueAtTime(800, now); dO.frequency.exponentialRampToValueAtTime(1600, now + 0.05); dO.frequency.exponentialRampToValueAtTime(400, now + 0.15);
-                        dG.gain.setValueAtTime(vol * 0.3, now); dG.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
-                        dO.connect(dG); dG.connect(ctx.destination);
-                        dO.start(now); dO.stop(now + 0.2);
-                        break;
+                if (settings.transitionSound === 'muyu') createTone(750, 0.12, time);
+                else if (settings.transitionSound === 'qing') {
+                    const qOsc = ctx.createOscillator();
+                    const qGain = ctx.createGain();
+                    qOsc.frequency.setValueAtTime(220, time);
+                    qOsc.frequency.exponentialRampToValueAtTime(218, time + 1.5);
+                    qGain.gain.setValueAtTime(0, time);
+                    qGain.gain.linearRampToValueAtTime(vol * 0.4, time + 0.005);
+                    qGain.gain.exponentialRampToValueAtTime(0.001, time + 2.0);
+                    qOsc.connect(qGain);
+                    qGain.connect(ctx.destination);
+                    qOsc.start(time);
+                    qOsc.stop(time + 2.0);
+                } else if (settings.transitionSound === 'drop') {
+                    const dO = ctx.createOscillator(); const dG = ctx.createGain();
+                    dO.frequency.setValueAtTime(800, time);
+                    dO.frequency.exponentialRampToValueAtTime(1600, time + 0.05);
+                    dO.frequency.exponentialRampToValueAtTime(400, time + 0.15);
+                    dG.gain.setValueAtTime(0, time);
+                    dG.gain.linearRampToValueAtTime(vol * 0.3, time + 0.002);
+                    dG.gain.exponentialRampToValueAtTime(0.001, time + 0.2);
+                    dO.connect(dG); dG.connect(ctx.destination);
+                    dO.start(time); dO.stop(time + 0.2);
                 }
-            }, [settings.transitionSound, settings.volume, settings.vibrationEnabled]);
+            }, [settings.transitionSound, settings.volume]);
 
-            useEffect(() => { if (isActive && phase !== 'ready') triggerTransitionSound(); }, [phase, isActive, triggerTransitionSound]);
+            // --- 核心修复：音频驱动调度器 ---
+            useEffect(() => {
+                if (!isActive) {
+                    if (keepAliveNodeRef.current) { keepAliveNodeRef.current.stop(); keepAliveNodeRef.current = null; }
+                    return;
+                }
 
-            // --- 音频引擎 ---
+                const ctx = audioCtxRef.current;
+                cycleStartTimeAudioRef.current = ctx.currentTime;
+                nextScheduleTimeRef.current = ctx.currentTime;
+
+                // 启动静默活跃信号，强制 iOS 维持音频进程
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.frequency.value = 1; // 极低频超声波
+                gain.gain.value = 0.001; 
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+                keepAliveNodeRef.current = osc;
+
+                const lookahead = 0.2; // 提前 200ms 调度
+                const timerInterval = 50; // 每 50ms 检查一次
+
+                const scheduler = setInterval(() => {
+                    if (!isActiveRef.current) return;
+                    
+                    const now = ctx.currentTime;
+                    const totalSec = settings.inhale + settings.hold + settings.exhale;
+                    const iS = settings.inhale, hS = settings.hold;
+
+                    // 检查是否需要调度下一个声音
+                    if (nextScheduleTimeRef.current < now + lookahead) {
+                        // 逻辑：每当一个相位结束，调度音效并计算下一个相位结束点
+                        scheduleTransitionSound(nextScheduleTimeRef.current);
+                        
+                        // 计算下一个转折点
+                        // 我们需要知道当前在哪个相位
+                        const elapsed = (nextScheduleTimeRef.current - cycleStartTimeAudioRef.current) % totalSec;
+                        let nextIn;
+                        if (elapsed < iS - 0.01) nextIn = iS - elapsed;
+                        else if (elapsed < iS + hS - 0.01) nextIn = (iS + hS) - elapsed;
+                        else nextIn = totalSec - elapsed;
+
+                        nextScheduleTimeRef.current += Math.max(nextIn, 0.1);
+                    }
+                }, timerInterval);
+
+                return () => clearInterval(scheduler);
+            }, [isActive, settings.inhale, settings.hold, settings.exhale, scheduleTransitionSound]);
+
+            // --- UI 渲染与同步逻辑 ---
+            useEffect(() => {
+                if (!isActive) { 
+                    const now = audioCtxRef.current?.currentTime || 0;
+                    [windGainRef, bgMainGainRef].forEach(ref => {
+                        if (ref.current) { ref.current.gain.cancelScheduledValues(now); ref.current.gain.setTargetAtTime(0, now, 0.05); }
+                    });
+                    return; 
+                }
+
+                const animate = () => {
+                    if (!isActiveRef.current) return;
+                    const ctx = audioCtxRef.current;
+                    const total = settings.inhale + settings.hold + settings.exhale;
+                    const elapsed = (ctx.currentTime - cycleStartTimeAudioRef.current) % total;
+                    
+                    let cPh = 'inhale', cPr = 0;
+                    const i = settings.inhale, h = settings.hold, e = settings.exhale;
+
+                    if (elapsed < i) { cPh = 'inhale'; cPr = elapsed / i; }
+                    else if (elapsed < i + h) { cPh = 'hold'; cPr = (elapsed - i) / h; }
+                    else { cPh = 'exhale'; cPr = e > 0 ? (elapsed - i - h) / e : 1; }
+
+                    setPhase(cPh);
+                    setDisplayProgress(cPr);
+                    
+                    // 只有在屏幕点亮时更新平滑音频（如风声、流水）
+                    if (settings.soundEnabled && bgMainGainRef.current) {
+                        const now = ctx.currentTime;
+                        let bgV = settings.volume * (settings.bgType === 'none' ? 0 : 0.4);
+                        bgMainGainRef.current.gain.setTargetAtTime(bgV, now, 0.5);
+                        
+                        if (settings.bgType !== 'none') {
+                            const sP = easeInOutSine(cPr);
+                            let wG = 0;
+                            if (cPh === 'inhale') wG = settings.volume * (0.05 + sP * 0.2);
+                            else if (cPh === 'exhale') wG = settings.volume * (0.25 - sP * 0.2);
+                            if (windGainRef.current) windGainRef.current.gain.setTargetAtTime(wG, now, 0.1);
+                        }
+                    }
+                    
+                    animationFrameRef.current = requestAnimationFrame(animate);
+                };
+                animationFrameRef.current = requestAnimationFrame(animate);
+                return () => cancelAnimationFrame(animationFrameRef.current);
+            }, [isActive, settings.inhale, settings.hold, settings.exhale, settings.bgType, settings.volume, settings.soundEnabled]);
+
+            useEffect(() => {
+                let t; if (isActive) t = setInterval(() => setElapsedTime(p => p + 1), 1000);
+                return () => clearInterval(t);
+            }, [isActive]);
+
             const initAudio = () => {
                 if (audioCtxRef.current) { if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume(); return; }
                 try {
@@ -204,97 +270,11 @@
                     const bgBG = ctx.createGain(); bgBG.gain.value = 0;
                     const bgF = ctx.createBiquadFilter(); bgF.type = 'lowpass';
                     const bgMG = ctx.createGain(); bgMG.gain.value = 0;
-                    const lfo = ctx.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 0.15;
-                    const lfoG = ctx.createGain(); lfoG.gain.value = 0.05;
-                    lfo.connect(lfoG); lfoG.connect(bgMG.gain);
                     bgWSrc.connect(bgWG); bgBSrc.connect(bgBG); bgWG.connect(bgF); bgBG.connect(bgF); bgF.connect(bgMG); bgMG.connect(ctx.destination);
-                    bgWSrc.start(); bgBSrc.start(); lfo.start();
+                    bgWSrc.start(); bgBSrc.start();
                     bgWhiteGainRef.current = bgWG; bgBrownGainRef.current = bgBG; bgFilterRef.current = bgF; bgMainGainRef.current = bgMG;
-                    
-                    if (settings.runMode === 'background') startKeepAliveAudio();
                 } catch (e) { console.error(e); }
             };
-
-            const stopAudio = useCallback(() => {
-                if (!audioCtxRef.current) return;
-                const now = audioCtxRef.current.currentTime;
-                [windGainRef, bgMainGainRef, bgWhiteGainRef, bgBrownGainRef].forEach(ref => {
-                    if (ref.current) { ref.current.gain.cancelScheduledValues(now); ref.current.gain.setTargetAtTime(0, now, 0.05); }
-                });
-                stopKeepAliveAudio();
-            }, []);
-
-            const updateAudioSmoothly = useCallback((cur, prog) => {
-                if (!isActiveRef.current || !settings.soundEnabled || !bgMainGainRef.current || !audioCtxRef.current) return;
-                const now = audioCtxRef.current.currentTime;
-                let bgFr = 600, bgV = settings.volume * 0.4, wMx = 0, bMx = 0, isAmb = true;
-                switch(settings.bgType) {
-                    case 'stream': bMx = 1.0; break;
-                    case 'rain': bgFr = 1800; wMx = 0.8; bMx = 0.2; bgV = settings.volume * 0.25; break;
-                    case 'forest': bgFr = 350; bMx = 1.0; bgV = settings.volume * 0.5; break;
-                    case 'fire': bgFr = 200; bMx = 0.6; wMx = 0.1; bgV = settings.volume * 0.4; break;
-                    case 'zen': bgFr = 150; bMx = 0.4; bgV = settings.volume * 0.6; break;
-                    case 'none': bgV = 0; isAmb = false; break;
-                }
-                bgWhiteGainRef.current.gain.setTargetAtTime(wMx, now, 0.5);
-                bgBrownGainRef.current.gain.setTargetAtTime(bMx, now, 0.5);
-                bgFilterRef.current.frequency.setTargetAtTime(bgFr, now, 0.5);
-                bgMainGainRef.current.gain.setTargetAtTime(bgV, now, 0.5);
-                const sP = easeInOutSine(prog); let wF = 300, wGl = 0;
-                if (isAmb) {
-                    if (cur === 'inhale') { wF = 300 + (sP * 800); wGl = settings.volume * (0.05 + sP * 0.2); }
-                    else if (cur === 'exhale') { wF = 900 - (sP * 600); wGl = settings.volume * (0.25 - sP * 0.2); }
-                    else if (cur === 'hold') { wF = 350; wGl = settings.volume * (0.03); }
-                }
-                if (windFilterRef.current) windFilterRef.current.frequency.setTargetAtTime(wF, now, 0.1);
-                if (windGainRef.current) windGainRef.current.gain.setTargetAtTime(wGl, now, 0.1);
-            }, [settings.soundEnabled, settings.volume, settings.bgType]);
-
-            // --- 呼吸主引擎：带 setInterval 兜底 (针对后台锁屏) ---
-            useEffect(() => {
-                if (!isActive) { stopAudio(); cycleStartTimeRef.current = null; return; }
-                const totalCycle = (settings.inhale + settings.hold + settings.exhale) * 1000;
-                
-                const processFrame = (time) => {
-                    if (!isActiveRef.current) return;
-                    if (!cycleStartTimeRef.current) cycleStartTimeRef.current = time;
-                    const elapsed = (time - cycleStartTimeRef.current) % totalCycle;
-                    let cPh = 'inhale', cPr = 0;
-                    const iM = settings.inhale * 1000, hM = settings.hold * 1000, eM = settings.exhale * 1000;
-                    if (elapsed < iM) { cPh = 'inhale'; cPr = elapsed / iM; }
-                    else if (elapsed < iM + hM) { cPh = 'hold'; cPr = (elapsed - iM) / hM; }
-                    else { const r = elapsed - iM - hM; cPh = 'exhale'; cPr = eM > 0 ? Math.min(r / eM, 1) : 1; }
-                    
-                    setPhase(p => {
-                        // 锁屏存活模式下，当 phase 切换时手动触发音效，因为 rAF 可能会停跳
-                        if (p !== cPh) triggerTransitionSound(); 
-                        return cPh;
-                    });
-                    setDisplayProgress(cPr);
-                    updateAudioSmoothly(cPh, cPr);
-                };
-
-                const animate = (time) => {
-                    processFrame(time);
-                    animationFrameRef.current = requestAnimationFrame(animate);
-                };
-                animationFrameRef.current = requestAnimationFrame(animate);
-
-                // 锁屏兜底：即使 rAF 被挂起，setInterval 也会在音频播放期间努力尝试执行
-                const backupTimer = setInterval(() => {
-                    if (isActiveRef.current) processFrame(performance.now());
-                }, 500);
-
-                return () => { 
-                    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-                    clearInterval(backupTimer);
-                };
-            }, [isActive, settings.inhale, settings.hold, settings.exhale, stopAudio, updateAudioSmoothly, triggerTransitionSound]);
-
-            useEffect(() => {
-                let timer; if (isActive) timer = setInterval(() => setElapsedTime(p => p + 1), 1000);
-                return () => clearInterval(timer);
-            }, [isActive]);
 
             const { scale, color, opacity } = (() => {
                 const sP = easeInOutSine(displayProgress);
@@ -316,7 +296,7 @@
                             </div>
                         </div>
                         <div className="flex items-center gap-3">
-                            <button onClick={() => setShowAI(true)} className="p-3 bg-blue-600/20 border border-blue-500/30 rounded-2xl text-blue-400 active:scale-95 shadow-lg"><Icon name="Sparkles" size={20}/></button>
+                            <button onClick={() => window.open('https://github.com/crowngithub/breathflow', '_blank')} className="p-3 bg-white/5 rounded-2xl text-slate-400 active:scale-95 shadow-lg"><Icon name="Globe" size={20}/></button>
                             <button onClick={() => setShowSettings(true)} className="p-3 bg-white/5 rounded-2xl text-slate-400 active:scale-95 shadow-lg"><Icon name="Settings" size={20}/></button>
                         </div>
                     </div>
@@ -325,7 +305,7 @@
                         {isActive && (
                             <div className="absolute top-0 flex items-center gap-2 bg-blue-500/10 px-4 py-2 rounded-xl text-[9px] text-blue-400/80 tracking-widest uppercase animate-pulse z-30">
                                 <Icon name={settings.runMode === 'wakelock' ? "Zap" : "Shield"} size={10} />
-                                {settings.runMode === 'wakelock' ? "常亮锁已激活" : "静默音保持中"}
+                                {settings.runMode === 'wakelock' ? "高优先级常亮已开启" : "音频时间轴驱动中"}
                             </div>
                         )}
                         <div className="absolute w-[500px] h-[500px] rounded-full blur-[100px] transition-all duration-1000" style={{ backgroundColor: color, opacity: opacity * 0.3 }}></div>
@@ -337,7 +317,7 @@
                             </div>
                         </div>
                         <div className="mt-16 text-center z-10 px-4 max-w-xs text-slate-500 text-[10px] tracking-[0.3em] uppercase leading-relaxed">
-                            {aiSuggestion ? aiSuggestion.wisdom : "身心合一，定于丹田"}
+                            {phase === 'ready' ? '身心合一，定于丹田' : `当前阶段：${phase === 'inhale' ? '吸气' : phase === 'hold' ? '屏息' : '呼气'}`}
                         </div>
                     </div>
 
@@ -359,12 +339,12 @@
                         <div className="fixed inset-0 bg-black/95 backdrop-blur-xl z-[100] flex items-center justify-center p-6 animate-in">
                             <div className="bg-slate-900/90 w-full max-w-sm rounded-[2.5rem] border border-white/10 p-8 space-y-6 shadow-2xl max-h-[90vh] overflow-y-auto">
                                 <div className="flex justify-between items-center mb-4 sticky top-0 bg-transparent z-10">
-                                    <h3 className="text-sm font-medium tracking-widest uppercase text-white">高级参数</h3>
+                                    <h3 className="text-sm font-medium tracking-widest uppercase text-white">专业参数</h3>
                                     <button onClick={() => setShowSettings(false)} className="text-[10px] bg-blue-600 px-4 py-2 rounded-full uppercase text-white font-bold">确认</button>
                                 </div>
                                 
                                 <div className="space-y-4 p-4 bg-white/5 rounded-2xl border border-white/5">
-                                    <label className="text-[10px] text-slate-400 uppercase tracking-widest">运行策略</label>
+                                    <label className="text-[10px] text-slate-400 uppercase tracking-widest">运行策略 (锁屏保障)</label>
                                     <div className="grid grid-cols-2 gap-2 mt-2">
                                         {[{ id: 'background', label: '锁屏存活', icon: 'Shield' }, { id: 'wakelock', label: '屏幕常亮', icon: 'Zap' }].map(o => (
                                             <button key={o.id} onClick={() => setSettings(s => ({...s, runMode: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.runMode === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
@@ -375,21 +355,10 @@
                                 </div>
 
                                 <div className="space-y-2 pt-4 border-t border-white/5">
-                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">转折音效类型</label>
+                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">转折音效 (硬件级调度)</label>
                                     <div className="grid grid-cols-2 gap-2 mt-2">
-                                        {[{ id: 'qing', label: '静心颂钵', icon: 'Bell' }, { id: 'muyu', label: '禅意木鱼', icon: 'Drum' }, { id: 'drop', label: '灵动水滴', icon: 'Droplets' }, { id: 'none', label: '无音效', icon: 'Ban' }].map(o => (
+                                        {[{ id: 'qing', label: '静心颂钵', icon: 'Bell' }, { id: 'muyu', label: '禅意木鱼', icon: 'Drum' }, { id: 'drop', label: '灵动水滴', icon: 'Droplets' }, { id: 'none', label: '无', icon: 'Ban' }].map(o => (
                                             <button key={o.id} onClick={() => setSettings(s => ({...s, transitionSound: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.transitionSound === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
-                                                <Icon name={o.icon} size={16} /> <span className="text-[9px]">{o.label}</span>
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
-
-                                <div className="space-y-2 pt-4 border-t border-white/5">
-                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">背景声音</label>
-                                    <div className="grid grid-cols-3 gap-2 mt-2">
-                                        {[{ id: 'none', label: '无', icon: 'Ban' }, { id: 'stream', label: '流水', icon: 'Waves' }, { id: 'rain', label: '细雨', icon: 'CloudRain' }].map(o => (
-                                            <button key={o.id} onClick={() => setSettings(s => ({...s, bgType: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.bgType === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
                                                 <Icon name={o.icon} size={16} /> <span className="text-[9px]">{o.label}</span>
                                             </button>
                                         ))}
@@ -401,17 +370,17 @@
                                         <div key={item.key} className="flex items-center justify-between">
                                             <label className="text-[10px] text-slate-400 uppercase tracking-widest">{item.label}</label>
                                             <div className="flex items-center gap-3">
-                                                <button onClick={() => setSettings(s => ({...s, [item.key]: Math.max(0, s[item.key] - 1)}))} className="p-1.5 rounded-lg bg-white/5 text-slate-400 hover:text-white"><Icon name="Minus" size={12}/></button>
+                                                <button onClick={() => setSettings(s => ({...s, [item.key]: Math.max(0.5, s[item.key] - 0.5)}))} className="p-1.5 rounded-lg bg-white/5 text-slate-400 hover:text-white"><Icon name="Minus" size={12}/></button>
                                                 <span className="w-8 text-center text-lg font-light tabular-nums text-white">{settings[item.key]}</span>
-                                                <button onClick={() => setSettings(s => ({...s, [item.key]: s[item.key] + 1}))} className="p-1.5 rounded-lg bg-white/5 text-slate-400 hover:text-white"><Icon name="Plus" size={12}/></button>
+                                                <button onClick={() => setSettings(s => ({...s, [item.key]: s[item.key] + 0.5}))} className="p-1.5 rounded-lg bg-white/5 text-slate-400 hover:text-white"><Icon name="Plus" size={12}/></button>
                                             </div>
                                         </div>
                                     ))}
                                 </div>
                                 
                                 <div className="pt-8 border-t border-white/5 flex flex-col items-center gap-2">
-                                    <span className="text-[9px] text-slate-600 uppercase tracking-tighter">v{APP_VERSION} 锁屏增强版</span>
-                                    <button onClick={() => window.location.reload(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/5 text-slate-500 text-[10px] uppercase tracking-widest">强制重载</button>
+                                    <span className="text-[9px] text-slate-600 uppercase tracking-tighter">v{APP_VERSION} 硬件音频调度版</span>
+                                    <button onClick={() => window.location.reload(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/5 text-slate-500 text-[10px] uppercase tracking-widest">重载配置</button>
                                 </div>
                             </div>
                         </div>
