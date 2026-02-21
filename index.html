@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>息道 - 丹田呼吸 AI 训练器</title>
-    <!-- PWA 适配标签 -->
+    <!-- PWA 适配 -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="息道">
@@ -24,33 +24,33 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback } = React;
 
-        // 当前应用版本
-        const APP_VERSION = "1.7.2";
-        const apiKey = ""; 
+        const APP_VERSION = "1.8.1";
         const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
 
+        /**
+         * 内置 SVG 图标
+         */
         const Icon = ({ name, size = 24, className = "" }) => {
             const icons = {
                 Play: <path d="m5 3 14 9-14 9V3z"/>,
                 Pause: <><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></>,
                 RotateCcw: <><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></>,
                 Settings: <><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></>,
-                Clock: <><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
-                Plus: <path d="M12 5v14M5 12h14" />,
-                Minus: <path d="M5 12h14" />,
                 Volume2: <><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></>,
                 VolumeX: <><path d="M11 5L6 9H2v6h4l5 4V5z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></>,
-                Sparkles: <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>,
+                Plus: <path d="M12 5v14M5 12h14" />,
+                Minus: <path d="M5 12h14" />,
+                Clock: <><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
                 Waves: <><path d="M2 6c.6.5 1.2 1 2.5 1s2.5-1 4-1 2.6 1 4 1 2.5-1 4-1 2.5 1 4 1"/><path d="M2 12c.6.5 1.2 1 2.5 1s2.5-1 4-1 2.6 1 4 1 2.5-1 4-1 2.5 1 4 1"/><path d="M2 18c.6.5 1.2 1 2.5 1s2.5-1 4-1 2.6 1 4 1 2.5-1 4-1 2.5 1 4 1"/></>,
                 CloudRain: <path d="M20 16.2A4.5 4.5 0 0 0 17.5 8h-1.8A7 7 0 1 0 4 14.9M12 18v4M8 18v2M16 18v2"/>,
                 Trees: <path d="m11 11-4 4h8l-4-4ZM11 4l-5 5h10l-5-5ZM11 15v5"/>,
-                Ban: <><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></>,
-                Refresh: <path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"/>,
                 Bell: <><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></>,
-                Drum: <path d="M12 2v20M5 7l14 10M5 17l14-10" strokeWidth="1" opacity="0.3" />,
-                Globe: <><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></>,
+                Drum: <path d="M12 2v20M5 7l14 10M5 17l14-10" />,
+                Droplets: <path d="M7 16.3c2.2 0 4-1.8 4-4 0-3.3-4-8-4-8s-4 4.7-4 8c0 2.2 1.8 4 4 4Z" />,
+                Ban: <><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></>,
+                Shield: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>,
                 Zap: <path d="M13 2 L3 14 L12 14 L11 22 L21 10 L12 10 L13 2 Z"/>,
-                Shield: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                RotateCw: <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
             };
             return (
                 <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -62,146 +62,128 @@
         const easeInOutSine = (x) => -(Math.cos(Math.PI * x) - 1) / 2;
 
         const App = () => {
+            // --- 核心状态 ---
             const [isActive, setIsActive] = useState(false);
             const [phase, setPhase] = useState('ready'); 
             const [settings, setSettings] = useState({
                 inhale: 4, hold: 0, exhale: 4,
-                soundEnabled: true, volume: 0.4, 
-                bgType: 'none',             
-                transitionSound: 'qing',    
-                vibrationEnabled: true,
-                runMode: 'background',      
-                apiProxyUrl: DEFAULT_BASE_URL 
+                volume: 0.4, 
+                bgType: 'none',             // 默认：无背景音乐
+                transitionSound: 'qing',    // 默认：颂钵音效
+                runMode: 'background',      // 默认：锁屏存活方案
+                vibrationEnabled: true
             });
             const [elapsedTime, setElapsedTime] = useState(0);
             const [displayProgress, setDisplayProgress] = useState(0); 
             const [showSettings, setShowSettings] = useState(false);
 
+            // --- 引用管理 ---
             const audioCtxRef = useRef(null);
             const windGainRef = useRef(null);
             const bgMainGainRef = useRef(null);
-            const bgWhiteGainRef = useRef(null);
-            const bgBrownGainRef = useRef(null);
             const bgFilterRef = useRef(null);
-            const windFilterRef = useRef(null);
             const keepAliveNodeRef = useRef(null);
-            const animationFrameRef = useRef(null);
-            
-            // 核心引用：用于锁屏调度的时钟逻辑
+            const wakeLockRef = useRef(null);
             const nextScheduleTimeRef = useRef(0);
-            const lastScheduledPhaseRef = useRef('');
-            const cycleStartTimeAudioRef = useRef(0); // 基准音频时间
+            const cycleStartTimeAudioRef = useRef(0);
             
             const isActiveRef = useRef(isActive);
             useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
 
-            // --- 预加载调度函数 (木鱼/颂钵声音) ---
-            const scheduleTransitionSound = useCallback((time) => {
+            // --- 常亮锁 (Wake Lock) 修复 ---
+            const toggleWakeLock = async (enable) => {
+                if ('wakeLock' in navigator) {
+                    try {
+                        if (enable && !wakeLockRef.current) {
+                            wakeLockRef.current = await navigator.wakeLock.request('screen');
+                            console.log('屏幕锁定成功');
+                        } else if (!enable && wakeLockRef.current) {
+                            await wakeLockRef.current.release();
+                            wakeLockRef.current = null;
+                            console.log('屏幕锁定释放');
+                        }
+                    } catch (err) { console.warn('常亮锁操作失败:', err); }
+                }
+            };
+
+            useEffect(() => {
+                if (isActive && settings.runMode === 'wakelock') toggleWakeLock(true);
+                else toggleWakeLock(false);
+                return () => toggleWakeLock(false);
+            }, [isActive, settings.runMode]);
+
+            // --- 核心修复：锁屏存活音效调度 ---
+            const scheduleTone = useCallback((time) => {
                 if (settings.transitionSound === 'none' || !audioCtxRef.current) return;
                 const ctx = audioCtxRef.current;
                 const vol = settings.volume;
 
-                const createTone = (freq, duration, targetTime) => {
-                    const osc = ctx.createOscillator();
-                    const gain = ctx.createGain();
-                    osc.type = 'sine';
-                    osc.frequency.setValueAtTime(freq, targetTime);
-                    gain.gain.setValueAtTime(0, targetTime);
-                    gain.gain.linearRampToValueAtTime(vol * 0.5, targetTime + 0.002);
-                    gain.gain.exponentialRampToValueAtTime(0.001, targetTime + duration);
-                    osc.connect(gain);
-                    gain.connect(ctx.destination);
-                    osc.start(targetTime);
-                    osc.stop(targetTime + duration);
+                const createOsc = (freq, dur, tTime, reso = false) => {
+                    const osc = ctx.createOscillator(); const gain = ctx.createGain();
+                    osc.type = 'sine'; osc.frequency.setValueAtTime(freq, tTime);
+                    if (reso) osc.frequency.exponentialRampToValueAtTime(freq * 0.98, tTime + dur);
+                    gain.gain.setValueAtTime(0, tTime);
+                    gain.gain.linearRampToValueAtTime(vol * 0.5, tTime + 0.005);
+                    gain.gain.exponentialRampToValueAtTime(0.001, tTime + dur);
+                    osc.connect(gain); gain.connect(ctx.destination);
+                    osc.start(tTime); osc.stop(tTime + dur);
                 };
 
-                if (settings.transitionSound === 'muyu') createTone(750, 0.12, time);
-                else if (settings.transitionSound === 'qing') {
-                    const qOsc = ctx.createOscillator();
-                    const qGain = ctx.createGain();
-                    qOsc.frequency.setValueAtTime(220, time);
-                    qOsc.frequency.exponentialRampToValueAtTime(218, time + 1.5);
-                    qGain.gain.setValueAtTime(0, time);
-                    qGain.gain.linearRampToValueAtTime(vol * 0.4, time + 0.005);
-                    qGain.gain.exponentialRampToValueAtTime(0.001, time + 2.0);
-                    qOsc.connect(qGain);
-                    qGain.connect(ctx.destination);
-                    qOsc.start(time);
-                    qOsc.stop(time + 2.0);
-                } else if (settings.transitionSound === 'drop') {
-                    const dO = ctx.createOscillator(); const dG = ctx.createGain();
-                    dO.frequency.setValueAtTime(800, time);
-                    dO.frequency.exponentialRampToValueAtTime(1600, time + 0.05);
-                    dO.frequency.exponentialRampToValueAtTime(400, time + 0.15);
-                    dG.gain.setValueAtTime(0, time);
-                    dG.gain.linearRampToValueAtTime(vol * 0.3, time + 0.002);
-                    dG.gain.exponentialRampToValueAtTime(0.001, time + 0.2);
-                    dO.connect(dG); dG.connect(ctx.destination);
-                    dO.start(time); dO.stop(time + 0.2);
+                if (settings.transitionSound === 'muyu') createOsc(750, 0.12, time);
+                else if (settings.transitionSound === 'qing') createOsc(220, 2.0, time, true);
+                else if (settings.transitionSound === 'drop') {
+                    const o = ctx.createOscillator(); const g = ctx.createGain();
+                    o.frequency.setValueAtTime(800, time);
+                    o.frequency.exponentialRampToValueAtTime(1600, time + 0.05);
+                    o.frequency.exponentialRampToValueAtTime(400, time + 0.15);
+                    g.gain.setValueAtTime(0, time); g.gain.linearRampToValueAtTime(vol * 0.3, time + 0.002);
+                    g.gain.exponentialRampToValueAtTime(0.001, time + 0.2);
+                    o.connect(g); g.connect(ctx.destination);
+                    o.start(time); o.stop(time + 0.2);
                 }
             }, [settings.transitionSound, settings.volume]);
 
-            // --- 核心修复：音频驱动调度器 ---
+            // --- 锁屏保活时钟 (Scheduler) ---
             useEffect(() => {
                 if (!isActive) {
                     if (keepAliveNodeRef.current) { keepAliveNodeRef.current.stop(); keepAliveNodeRef.current = null; }
                     return;
                 }
-
                 const ctx = audioCtxRef.current;
                 cycleStartTimeAudioRef.current = ctx.currentTime;
                 nextScheduleTimeRef.current = ctx.currentTime;
 
-                // 启动静默活跃信号，强制 iOS 维持音频进程
-                const osc = ctx.createOscillator();
-                const gain = ctx.createGain();
-                osc.frequency.value = 1; // 极低频超声波
-                gain.gain.value = 0.001; 
-                osc.connect(gain);
-                gain.connect(ctx.destination);
-                osc.start();
-                keepAliveNodeRef.current = osc;
+                // 超低频静默震荡，维持 iOS 硬件音频进程
+                const osc = ctx.createOscillator(); const gain = ctx.createGain();
+                osc.frequency.value = 1.5; gain.gain.value = 0.0001;
+                osc.connect(gain); gain.connect(ctx.destination);
+                osc.start(); keepAliveNodeRef.current = osc;
 
-                const lookahead = 0.2; // 提前 200ms 调度
-                const timerInterval = 50; // 每 50ms 检查一次
-
-                const scheduler = setInterval(() => {
+                const timer = setInterval(() => {
                     if (!isActiveRef.current) return;
-                    
                     const now = ctx.currentTime;
                     const totalSec = settings.inhale + settings.hold + settings.exhale;
-                    const iS = settings.inhale, hS = settings.hold;
-
-                    // 检查是否需要调度下一个声音
-                    if (nextScheduleTimeRef.current < now + lookahead) {
-                        // 逻辑：每当一个相位结束，调度音效并计算下一个相位结束点
-                        scheduleTransitionSound(nextScheduleTimeRef.current);
-                        
-                        // 计算下一个转折点
-                        // 我们需要知道当前在哪个相位
+                    if (nextScheduleTimeRef.current < now + 0.2) {
+                        scheduleTone(nextScheduleTimeRef.current);
                         const elapsed = (nextScheduleTimeRef.current - cycleStartTimeAudioRef.current) % totalSec;
                         let nextIn;
+                        const iS = settings.inhale, hS = settings.hold;
                         if (elapsed < iS - 0.01) nextIn = iS - elapsed;
                         else if (elapsed < iS + hS - 0.01) nextIn = (iS + hS) - elapsed;
                         else nextIn = totalSec - elapsed;
-
                         nextScheduleTimeRef.current += Math.max(nextIn, 0.1);
                     }
-                }, timerInterval);
+                }, 50);
+                return () => clearInterval(timer);
+            }, [isActive, settings.inhale, settings.hold, settings.exhale, scheduleTone]);
 
-                return () => clearInterval(scheduler);
-            }, [isActive, settings.inhale, settings.hold, settings.exhale, scheduleTransitionSound]);
-
-            // --- UI 渲染与同步逻辑 ---
+            // --- 动画与实时音效同步 ---
             useEffect(() => {
-                if (!isActive) { 
-                    const now = audioCtxRef.current?.currentTime || 0;
-                    [windGainRef, bgMainGainRef].forEach(ref => {
-                        if (ref.current) { ref.current.gain.cancelScheduledValues(now); ref.current.gain.setTargetAtTime(0, now, 0.05); }
-                    });
-                    return; 
+                if (!isActive) {
+                   const now = audioCtxRef.current?.currentTime || 0;
+                   if (bgMainGainRef.current) bgMainGainRef.current.gain.setTargetAtTime(0, now, 0.1);
+                   return;
                 }
-
                 const animate = () => {
                     if (!isActiveRef.current) return;
                     const ctx = audioCtxRef.current;
@@ -210,40 +192,37 @@
                     
                     let cPh = 'inhale', cPr = 0;
                     const i = settings.inhale, h = settings.hold, e = settings.exhale;
-
                     if (elapsed < i) { cPh = 'inhale'; cPr = elapsed / i; }
                     else if (elapsed < i + h) { cPh = 'hold'; cPr = (elapsed - i) / h; }
                     else { cPh = 'exhale'; cPr = e > 0 ? (elapsed - i - h) / e : 1; }
 
-                    setPhase(cPh);
-                    setDisplayProgress(cPr);
+                    setPhase(cPh); setDisplayProgress(cPr);
                     
-                    // 只有在屏幕点亮时更新平滑音频（如风声、流水）
-                    if (settings.soundEnabled && bgMainGainRef.current) {
+                    if (bgMainGainRef.current) {
                         const now = ctx.currentTime;
-                        let bgV = settings.volume * (settings.bgType === 'none' ? 0 : 0.4);
-                        bgMainGainRef.current.gain.setTargetAtTime(bgV, now, 0.5);
-                        
-                        if (settings.bgType !== 'none') {
+                        const hasBg = settings.bgType !== 'none';
+                        bgMainGainRef.current.gain.setTargetAtTime(settings.volume * (hasBg ? 0.4 : 0), now, 0.5);
+                        if (hasBg && windGainRef.current) {
                             const sP = easeInOutSine(cPr);
                             let wG = 0;
                             if (cPh === 'inhale') wG = settings.volume * (0.05 + sP * 0.2);
                             else if (cPh === 'exhale') wG = settings.volume * (0.25 - sP * 0.2);
-                            if (windGainRef.current) windGainRef.current.gain.setTargetAtTime(wG, now, 0.1);
+                            windGainRef.current.gain.setTargetAtTime(wG, now, 0.1);
                         }
                     }
-                    
                     animationFrameRef.current = requestAnimationFrame(animate);
                 };
                 animationFrameRef.current = requestAnimationFrame(animate);
                 return () => cancelAnimationFrame(animationFrameRef.current);
-            }, [isActive, settings.inhale, settings.hold, settings.exhale, settings.bgType, settings.volume, settings.soundEnabled]);
+            }, [isActive, settings.inhale, settings.hold, settings.exhale, settings.bgType, settings.volume]);
 
+            // 计时器
             useEffect(() => {
                 let t; if (isActive) t = setInterval(() => setElapsedTime(p => p + 1), 1000);
                 return () => clearInterval(t);
             }, [isActive]);
 
+            // --- 核心功能函数 ---
             const initAudio = () => {
                 if (audioCtxRef.current) { if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume(); return; }
                 try {
@@ -251,29 +230,23 @@
                     audioCtxRef.current = ctx;
                     const bufferSize = 2 * ctx.sampleRate;
                     const whiteBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-                    const brownBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-                    const wD = whiteBuffer.getChannelData(0); const bD = brownBuffer.getChannelData(0);
-                    let lO = 0;
-                    for (let i = 0; i < bufferSize; i++) {
-                        wD[i] = Math.random() * 2 - 1;
-                        bD[i] = (lO + (0.02 * (Math.random() * 2 - 1))) / 1.002; lO = bD[i]; bD[i] *= 3.5;
-                    }
+                    const wD = whiteBuffer.getChannelData(0);
+                    for (let i = 0; i < bufferSize; i++) wD[i] = Math.random() * 2 - 1;
+                    
                     const wSrc = ctx.createBufferSource(); wSrc.buffer = whiteBuffer; wSrc.loop = true;
                     const wF = ctx.createBiquadFilter(); wF.type = 'lowpass'; wF.frequency.value = 400;
                     const wG = ctx.createGain(); wG.gain.value = 0;
                     wSrc.connect(wF); wF.connect(wG); wG.connect(ctx.destination); wSrc.start();
-                    windFilterRef.current = wF; windGainRef.current = wG;
+                    windGainRef.current = wG;
                     
-                    const bgWSrc = ctx.createBufferSource(); bgWSrc.buffer = whiteBuffer; bgWSrc.loop = true;
-                    const bgWG = ctx.createGain(); bgWG.gain.value = 0;
-                    const bgBSrc = ctx.createBufferSource(); bgBSrc.buffer = brownBuffer; bgBSrc.loop = true;
-                    const bgBG = ctx.createGain(); bgBG.gain.value = 0;
-                    const bgF = ctx.createBiquadFilter(); bgF.type = 'lowpass';
-                    const bgMG = ctx.createGain(); bgMG.gain.value = 0;
-                    bgWSrc.connect(bgWG); bgBSrc.connect(bgBG); bgWG.connect(bgF); bgBG.connect(bgF); bgF.connect(bgMG); bgMG.connect(ctx.destination);
-                    bgWSrc.start(); bgBSrc.start();
-                    bgWhiteGainRef.current = bgWG; bgBrownGainRef.current = bgBG; bgFilterRef.current = bgF; bgMainGainRef.current = bgMG;
+                    const bgMainG = ctx.createGain(); bgMainG.gain.value = 0;
+                    bgMainG.connect(ctx.destination);
+                    bgMainGainRef.current = bgMainG;
                 } catch (e) { console.error(e); }
+            };
+
+            const adjustAll = (d) => {
+                setSettings(s => ({...s, inhale: Math.max(1, s.inhale + d), exhale: Math.max(1, s.exhale + d)}));
             };
 
             const { scale, color, opacity } = (() => {
@@ -287,25 +260,25 @@
 
             return (
                 <div className="min-h-screen bg-[#010204] text-slate-200 flex flex-col items-center justify-between p-6 overflow-hidden select-none font-sans antialiased">
+                    
+                    {/* Header */}
                     <div className="w-full max-w-lg flex justify-between items-center z-20 pt-10 px-4">
                         <div className="flex flex-col">
                             <h1 className="text-2xl font-extralight tracking-[0.4em] text-white">息道</h1>
                             <div className="flex items-center gap-2 mt-1">
                                 <div className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-green-500 animate-pulse' : 'bg-slate-600'}`}></div>
-                                <span className="text-[10px] text-slate-500 tracking-widest uppercase font-medium">Nature AI Mode</span>
+                                <span className="text-[10px] text-slate-500 tracking-widest uppercase font-medium">v{APP_VERSION} Full Fixed</span>
                             </div>
                         </div>
-                        <div className="flex items-center gap-3">
-                            <button onClick={() => window.open('https://github.com/crowngithub/breathflow', '_blank')} className="p-3 bg-white/5 rounded-2xl text-slate-400 active:scale-95 shadow-lg"><Icon name="Globe" size={20}/></button>
-                            <button onClick={() => setShowSettings(true)} className="p-3 bg-white/5 rounded-2xl text-slate-400 active:scale-95 shadow-lg"><Icon name="Settings" size={20}/></button>
-                        </div>
+                        <button onClick={() => setShowSettings(true)} className="p-3 bg-white/5 rounded-2xl text-slate-400 active:scale-95 shadow-lg"><Icon name="Settings" size={20}/></button>
                     </div>
 
+                    {/* Main UI Area */}
                     <div className="relative flex flex-col items-center justify-center flex-1 w-full scale-90 md:scale-100">
                         {isActive && (
                             <div className="absolute top-0 flex items-center gap-2 bg-blue-500/10 px-4 py-2 rounded-xl text-[9px] text-blue-400/80 tracking-widest uppercase animate-pulse z-30">
                                 <Icon name={settings.runMode === 'wakelock' ? "Zap" : "Shield"} size={10} />
-                                {settings.runMode === 'wakelock' ? "高优先级常亮已开启" : "音频时间轴驱动中"}
+                                {settings.runMode === 'wakelock' ? "常亮模式：禁止休眠" : "背景存活：息屏不休眠"}
                             </div>
                         )}
                         <div className="absolute w-[500px] h-[500px] rounded-full blur-[100px] transition-all duration-1000" style={{ backgroundColor: color, opacity: opacity * 0.3 }}></div>
@@ -316,15 +289,36 @@
                                 </span>
                             </div>
                         </div>
-                        <div className="mt-16 text-center z-10 px-4 max-w-xs text-slate-500 text-[10px] tracking-[0.3em] uppercase leading-relaxed">
-                            {phase === 'ready' ? '身心合一，定于丹田' : `当前阶段：${phase === 'inhale' ? '吸气' : phase === 'hold' ? '屏息' : '呼气'}`}
+                        
+                        {/* 1. 恢复：面板加减描述界面 */}
+                        <div className="mt-16 flex flex-col items-center gap-6 z-10">
+                           <div className="flex items-center gap-8 bg-white/[0.03] p-1.5 px-4 rounded-full border border-white/5 backdrop-blur-sm shadow-inner transition-all hover:bg-white/5">
+                             <button onClick={() => adjustAll(-1)} className="p-2 text-slate-500 active:scale-75"><Icon name="Minus" size={20} /></button>
+                             <div className="flex flex-col items-center min-w-[100px]">
+                               <span className="text-[10px] uppercase tracking-widest text-slate-600 mb-0.5 font-bold">周期时长</span>
+                               <span className="text-lg font-light tabular-nums text-blue-400">{settings.inhale}s <span className="text-slate-600">/</span> {settings.exhale}s</span>
+                             </div>
+                             <button onClick={() => adjustAll(1)} className="p-2 text-slate-500 active:scale-75"><Icon name="Plus" size={20} /></button>
+                           </div>
                         </div>
                     </div>
 
-                    <div className="w-full max-w-md space-y-6 z-20 mb-10 px-6">
+                    {/* 2. 恢复：音量调节滑块 */}
+                    <div className="w-full max-w-md space-y-6 z-20 mb-6 px-6">
+                        <div className="flex flex-col gap-2">
+                           <div className="flex justify-between items-center px-2">
+                              <span className="text-[9px] text-slate-600 uppercase tracking-widest">Master Volume</span>
+                              <span className="font-mono text-[9px] text-slate-500 tabular-nums">{Math.round(settings.volume * 100)}%</span>
+                           </div>
+                           <div className="flex items-center gap-4">
+                            <Icon name={settings.volume > 0 ? "Volume2" : "VolumeX"} size={16} className="text-slate-600" />
+                            <input type="range" min="0" max="1" step="0.01" value={settings.volume} onChange={(e) => setSettings(s => ({...s, volume: parseFloat(e.target.value)}))} className="w-full h-[3px] bg-white/10 rounded-full appearance-none accent-blue-500 shadow-inner" style={{ background: `linear-gradient(to right, #3b82f6 ${settings.volume * 100}%, rgba(255,255,255,0.1) ${settings.volume * 100}%)` }} />
+                           </div>
+                        </div>
+
                         <div className="bg-white/[0.03] backdrop-blur-2xl border border-white/10 rounded-[2.5rem] p-4 flex items-center justify-around shadow-2xl">
-                            <button onClick={() => { setIsActive(false); setElapsedTime(0); setPhase('ready'); setDisplayProgress(0); stopAudio(); }} className="p-4 rounded-full bg-white/5 text-slate-500 active:scale-90"><Icon name="RotateCcw" size={22} /></button>
-                            <button onClick={() => { if (!isActive) initAudio(); setIsActive(!isActive); }} className={`p-8 rounded-full transition-all active:scale-95 shadow-2xl relative ${isActive ? 'bg-white text-black' : 'bg-blue-600 text-white'}`}>
+                            <button onClick={() => { setIsActive(false); setElapsedTime(0); setPhase('ready'); stopAudio(); }} className="p-4 rounded-full bg-white/5 text-slate-500 active:scale-90"><Icon name="RotateCcw" size={22} /></button>
+                            <button onClick={() => { if (!isActive) initAudio(); setIsActive(!isActive); }} className={`p-8 rounded-full transition-all active:scale-95 shadow-2xl relative ${isActive ? 'bg-white text-black' : 'bg-blue-600 text-white shadow-blue-600/30'}`}>
                                 <Icon name={isActive ? "Pause" : "Play"} size={32} className={isActive ? "" : "ml-1"} />
                                 {!isActive && <div className="absolute inset-0 rounded-full border border-blue-400 animate-ping opacity-20"></div>}
                             </button>
@@ -335,18 +329,22 @@
                         </div>
                     </div>
 
+                    {/* 设置弹窗 */}
                     {showSettings && (
                         <div className="fixed inset-0 bg-black/95 backdrop-blur-xl z-[100] flex items-center justify-center p-6 animate-in">
                             <div className="bg-slate-900/90 w-full max-w-sm rounded-[2.5rem] border border-white/10 p-8 space-y-6 shadow-2xl max-h-[90vh] overflow-y-auto">
                                 <div className="flex justify-between items-center mb-4 sticky top-0 bg-transparent z-10">
-                                    <h3 className="text-sm font-medium tracking-widest uppercase text-white">专业参数</h3>
+                                    <h3 className="text-sm font-medium tracking-widest uppercase text-white">专业配置</h3>
                                     <button onClick={() => setShowSettings(false)} className="text-[10px] bg-blue-600 px-4 py-2 rounded-full uppercase text-white font-bold">确认</button>
                                 </div>
                                 
                                 <div className="space-y-4 p-4 bg-white/5 rounded-2xl border border-white/5">
-                                    <label className="text-[10px] text-slate-400 uppercase tracking-widest">运行策略 (锁屏保障)</label>
+                                    <label className="text-[10px] text-slate-400 uppercase tracking-widest flex items-center gap-2">系统运行策略</label>
                                     <div className="grid grid-cols-2 gap-2 mt-2">
-                                        {[{ id: 'background', label: '锁屏存活', icon: 'Shield' }, { id: 'wakelock', label: '屏幕常亮', icon: 'Zap' }].map(o => (
+                                        {[
+                                            { id: 'background', label: '锁屏存活', icon: 'Shield' },
+                                            { id: 'wakelock', label: '屏幕常亮', icon: 'Zap' }
+                                        ].map(o => (
                                             <button key={o.id} onClick={() => setSettings(s => ({...s, runMode: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.runMode === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
                                                 <Icon name={o.icon} size={16} /> <span className="text-[9px]">{o.label}</span>
                                             </button>
@@ -354,10 +352,31 @@
                                     </div>
                                 </div>
 
+                                {/* 3. 恢复：设置中背景声音选项 */}
                                 <div className="space-y-2 pt-4 border-t border-white/5">
-                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">转折音效 (硬件级调度)</label>
+                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">背景声音环境</label>
+                                    <div className="grid grid-cols-3 gap-2 mt-2">
+                                        {[
+                                            { id: 'none', label: '无', icon: 'Ban' },
+                                            { id: 'stream', label: '流水', icon: 'Waves' },
+                                            { id: 'rain', label: '细雨', icon: 'CloudRain' }
+                                        ].map(o => (
+                                            <button key={o.id} onClick={() => setSettings(s => ({...s, bgType: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.bgType === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
+                                                <Icon name={o.icon} size={16} /> <span className="text-[9px]">{o.label}</span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div className="space-y-2 pt-4 border-t border-white/5">
+                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">转折提示音 (硬件调度)</label>
                                     <div className="grid grid-cols-2 gap-2 mt-2">
-                                        {[{ id: 'qing', label: '静心颂钵', icon: 'Bell' }, { id: 'muyu', label: '禅意木鱼', icon: 'Drum' }, { id: 'drop', label: '灵动水滴', icon: 'Droplets' }, { id: 'none', label: '无', icon: 'Ban' }].map(o => (
+                                        {[
+                                            { id: 'qing', label: '静心颂钵', icon: 'Bell' },
+                                            { id: 'muyu', label: '禅意木鱼', icon: 'Drum' },
+                                            { id: 'drop', label: '灵动水滴', icon: 'Droplets' },
+                                            { id: 'none', label: '无音效', icon: 'Ban' }
+                                        ].map(o => (
                                             <button key={o.id} onClick={() => setSettings(s => ({...s, transitionSound: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.transitionSound === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
                                                 <Icon name={o.icon} size={16} /> <span className="text-[9px]">{o.label}</span>
                                             </button>
@@ -379,12 +398,18 @@
                                 </div>
                                 
                                 <div className="pt-8 border-t border-white/5 flex flex-col items-center gap-2">
-                                    <span className="text-[9px] text-slate-600 uppercase tracking-tighter">v{APP_VERSION} 硬件音频调度版</span>
-                                    <button onClick={() => window.location.reload(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/5 text-slate-500 text-[10px] uppercase tracking-widest">重载配置</button>
+                                    <span className="text-[9px] text-slate-600 uppercase tracking-tighter">v{APP_VERSION} Full Fixed</span>
+                                    <button onClick={() => window.location.reload(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/5 text-slate-500 text-[10px] uppercase tracking-widest active:scale-95">强制重载</button>
                                 </div>
                             </div>
                         </div>
                     )}
+
+                    <style>{`
+                        input[type='range']::-webkit-slider-thumb { -webkit-appearance: none; height: 16px; width: 16px; border-radius: 50%; background: #ffffff; box-shadow: 0 0 10px rgba(59, 130, 246, 0.5); cursor: pointer; border: 2px solid #3b82f6; }
+                        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+                        .animate-in { animation: fadeIn 0.3s ease-out forwards; }
+                    `}</style>
                 </div>
             );
         };
