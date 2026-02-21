@@ -25,7 +25,7 @@
         const { useState, useEffect, useRef, useCallback } = React;
 
         // 当前应用版本
-        const APP_VERSION = "1.7.0";
+        const APP_VERSION = "1.7.1";
         const apiKey = ""; 
         const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
 
@@ -73,7 +73,7 @@
                 bgType: 'none',             // 默认：无背景音乐
                 transitionSound: 'qing',    // 默认：颂钵音效
                 vibrationEnabled: true,
-                runMode: 'background',      // 默认：锁屏存活优化 (background / wakelock)
+                runMode: 'background',      // 默认：锁屏存活优化
                 apiProxyUrl: DEFAULT_BASE_URL 
             });
             const [elapsedTime, setElapsedTime] = useState(0);
@@ -91,6 +91,7 @@
             const bgBrownGainRef = useRef(null);
             const bgFilterRef = useRef(null);
             const windFilterRef = useRef(null);
+            const silentNodeRef = useRef(null); // 静音轨道节点
             const animationFrameRef = useRef(null);
             const cycleStartTimeRef = useRef(null);
             const wakeLockRef = useRef(null);
@@ -98,19 +99,14 @@
             const isActiveRef = useRef(isActive);
             useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
 
-            // --- 唤醒锁逻辑 (Screen Wake Lock) ---
+            // --- 核心修复：屏幕唤醒锁 ---
             const requestWakeLock = async () => {
                 if ('wakeLock' in navigator && settings.runMode === 'wakelock') {
-                    try {
-                        wakeLockRef.current = await navigator.wakeLock.request('screen');
-                    } catch (err) { console.error('Wake Lock Error', err); }
+                    try { wakeLockRef.current = await navigator.wakeLock.request('screen'); } catch (err) {}
                 }
             };
-
             const releaseWakeLock = () => {
-                if (wakeLockRef.current) {
-                    wakeLockRef.current.release().then(() => { wakeLockRef.current = null; });
-                }
+                if (wakeLockRef.current) { wakeLockRef.current.release().then(() => { wakeLockRef.current = null; }); }
             };
 
             useEffect(() => {
@@ -118,6 +114,30 @@
                 else releaseWakeLock();
                 return () => releaseWakeLock();
             }, [isActive, settings.runMode]);
+
+            // --- 核心修复：锁屏存活逻辑 (通过维持静音音频流实现) ---
+            const startKeepAliveAudio = () => {
+                if (!audioCtxRef.current) return;
+                const ctx = audioCtxRef.current;
+                // 创建一个极小的静音缓冲区并循环播放，防止 iOS 挂起 JS 进程
+                const buffer = ctx.createBuffer(1, 1, 22050);
+                const source = ctx.createBufferSource();
+                source.buffer = buffer;
+                source.loop = true;
+                const gain = ctx.createGain();
+                gain.gain.value = 0.01; // 近乎无声
+                source.connect(gain);
+                gain.connect(ctx.destination);
+                source.start();
+                silentNodeRef.current = source;
+            };
+
+            const stopKeepAliveAudio = () => {
+                if (silentNodeRef.current) {
+                    try { silentNodeRef.current.stop(); } catch(e) {}
+                    silentNodeRef.current = null;
+                }
+            };
 
             // --- 转折音效触发 ---
             const triggerTransitionSound = useCallback(() => {
@@ -127,7 +147,7 @@
                 const vol = settings.volume;
                 if (settings.vibrationEnabled && "vibrate" in navigator) navigator.vibrate(30);
 
-                const createTone = (freq, duration, decay = 0.12) => {
+                const createTone = (freq, duration) => {
                     const osc = ctx.createOscillator(); const gain = ctx.createGain();
                     osc.type = 'sine'; osc.frequency.setValueAtTime(freq, now);
                     gain.gain.setValueAtTime(vol * 0.5, now);
@@ -157,30 +177,7 @@
 
             useEffect(() => { if (isActive && phase !== 'ready') triggerTransitionSound(); }, [phase, isActive, triggerTransitionSound]);
 
-            // API 调用
-            const callGemini = async (prompt, sys) => {
-                let delay = 1000;
-                const baseUrl = settings.apiProxyUrl || DEFAULT_BASE_URL;
-                const url = `${baseUrl}/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-                for (let i = 0; i < 5; i++) {
-                    try {
-                        const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], systemInstruction: { parts: [{ text: sys }] }, generationConfig: { responseMimeType: "application/json" } }) });
-                        const data = await res.json();
-                        return JSON.parse(data.candidates[0].content.parts[0].text);
-                    } catch (err) { if (i === 4) throw err; await new Promise(r => setTimeout(r, delay)); delay *= 2; }
-                }
-            };
-
-            const generateAISuggestion = async () => {
-                if (!userMood) return;
-                setIsAIThinking(true);
-                try {
-                    const res = await callGemini(`当前感受: ${userMood}`, "你是一位禅修大师。建议呼吸参数 JSON: { inhale:数字, hold:数字, exhale:数字, wisdom:短引导语 }。");
-                    setAiSuggestion(res);
-                } catch (e) { console.error(e); } finally { setIsAIThinking(false); }
-            };
-
-            // 音频引擎
+            // --- 音频引擎 ---
             const initAudio = () => {
                 if (audioCtxRef.current) { if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume(); return; }
                 try {
@@ -213,6 +210,8 @@
                     bgWSrc.connect(bgWG); bgBSrc.connect(bgBG); bgWG.connect(bgF); bgBG.connect(bgF); bgF.connect(bgMG); bgMG.connect(ctx.destination);
                     bgWSrc.start(); bgBSrc.start(); lfo.start();
                     bgWhiteGainRef.current = bgWG; bgBrownGainRef.current = bgBG; bgFilterRef.current = bgF; bgMainGainRef.current = bgMG;
+                    
+                    if (settings.runMode === 'background') startKeepAliveAudio();
                 } catch (e) { console.error(e); }
             };
 
@@ -222,6 +221,7 @@
                 [windGainRef, bgMainGainRef, bgWhiteGainRef, bgBrownGainRef].forEach(ref => {
                     if (ref.current) { ref.current.gain.cancelScheduledValues(now); ref.current.gain.setTargetAtTime(0, now, 0.05); }
                 });
+                stopKeepAliveAudio();
             }, []);
 
             const updateAudioSmoothly = useCallback((cur, prog) => {
@@ -250,24 +250,46 @@
                 if (windGainRef.current) windGainRef.current.gain.setTargetAtTime(wGl, now, 0.1);
             }, [settings.soundEnabled, settings.volume, settings.bgType]);
 
+            // --- 呼吸主引擎：带 setInterval 兜底 (针对后台锁屏) ---
             useEffect(() => {
                 if (!isActive) { stopAudio(); cycleStartTimeRef.current = null; return; }
-                const total = (settings.inhale + settings.hold + settings.exhale) * 1000;
-                const animate = (time) => {
+                const totalCycle = (settings.inhale + settings.hold + settings.exhale) * 1000;
+                
+                const processFrame = (time) => {
                     if (!isActiveRef.current) return;
                     if (!cycleStartTimeRef.current) cycleStartTimeRef.current = time;
-                    const elapsed = (time - cycleStartTimeRef.current) % total;
+                    const elapsed = (time - cycleStartTimeRef.current) % totalCycle;
                     let cPh = 'inhale', cPr = 0;
                     const iM = settings.inhale * 1000, hM = settings.hold * 1000, eM = settings.exhale * 1000;
                     if (elapsed < iM) { cPh = 'inhale'; cPr = elapsed / iM; }
                     else if (elapsed < iM + hM) { cPh = 'hold'; cPr = (elapsed - iM) / hM; }
                     else { const r = elapsed - iM - hM; cPh = 'exhale'; cPr = eM > 0 ? Math.min(r / eM, 1) : 1; }
-                    setPhase(cPh); setDisplayProgress(cPr); updateAudioSmoothly(cPh, cPr);
+                    
+                    setPhase(p => {
+                        // 锁屏存活模式下，当 phase 切换时手动触发音效，因为 rAF 可能会停跳
+                        if (p !== cPh) triggerTransitionSound(); 
+                        return cPh;
+                    });
+                    setDisplayProgress(cPr);
+                    updateAudioSmoothly(cPh, cPr);
+                };
+
+                const animate = (time) => {
+                    processFrame(time);
                     animationFrameRef.current = requestAnimationFrame(animate);
                 };
                 animationFrameRef.current = requestAnimationFrame(animate);
-                return () => { if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current); };
-            }, [isActive, settings.inhale, settings.hold, settings.exhale, stopAudio, updateAudioSmoothly]);
+
+                // 锁屏兜底：即使 rAF 被挂起，setInterval 也会在音频播放期间努力尝试执行
+                const backupTimer = setInterval(() => {
+                    if (isActiveRef.current) processFrame(performance.now());
+                }, 500);
+
+                return () => { 
+                    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+                    clearInterval(backupTimer);
+                };
+            }, [isActive, settings.inhale, settings.hold, settings.exhale, stopAudio, updateAudioSmoothly, triggerTransitionSound]);
 
             useEffect(() => {
                 let timer; if (isActive) timer = setInterval(() => setElapsedTime(p => p + 1), 1000);
@@ -303,7 +325,7 @@
                         {isActive && (
                             <div className="absolute top-0 flex items-center gap-2 bg-blue-500/10 px-4 py-2 rounded-xl text-[9px] text-blue-400/80 tracking-widest uppercase animate-pulse z-30">
                                 <Icon name={settings.runMode === 'wakelock' ? "Zap" : "Shield"} size={10} />
-                                {settings.runMode === 'wakelock' ? "屏幕常亮模式已开启" : "锁屏存活优化中"}
+                                {settings.runMode === 'wakelock' ? "常亮锁已激活" : "静默音保持中"}
                             </div>
                         )}
                         <div className="absolute w-[500px] h-[500px] rounded-full blur-[100px] transition-all duration-1000" style={{ backgroundColor: color, opacity: opacity * 0.3 }}></div>
@@ -314,29 +336,15 @@
                                 </span>
                             </div>
                         </div>
-                        <div className="mt-16 text-center z-10 px-4 max-w-xs">
-                            <p className="text-[10px] uppercase tracking-[0.3em] text-slate-500 h-10 mb-4 leading-relaxed">
-                                {aiSuggestion ? aiSuggestion.wisdom : "神定丹田，意随息转"}
-                            </p>
-                            <div className="flex items-center gap-6 bg-white/[0.03] p-1.5 px-4 rounded-full border border-white/5 backdrop-blur-sm shadow-inner mx-auto inline-flex">
-                                <button onClick={() => setSettings(p=>({...p, inhale: Math.max(1, p.inhale-1), exhale: Math.max(1, p.exhale-1)}))} className="p-2 text-slate-500 active:scale-75"><Icon name="Minus" size={18} /></button>
-                                <div className="flex flex-col items-center min-w-[80px]" onClick={() => setShowSettings(true)}>
-                                    <span className="text-[9px] uppercase tracking-widest text-slate-600 mb-0.5 font-bold">呼吸步长</span>
-                                    <span className="text-base font-light tabular-nums text-blue-400">{settings.inhale}s / {settings.exhale}s</span>
-                                </div>
-                                <button onClick={() => setSettings(p=>({...p, inhale: p.inhale+1, exhale: p.exhale+1}))} className="p-2 text-slate-500 active:scale-75"><Icon name="Plus" size={18} /></button>
-                            </div>
+                        <div className="mt-16 text-center z-10 px-4 max-w-xs text-slate-500 text-[10px] tracking-[0.3em] uppercase leading-relaxed">
+                            {aiSuggestion ? aiSuggestion.wisdom : "身心合一，定于丹田"}
                         </div>
                     </div>
 
                     <div className="w-full max-w-md space-y-6 z-20 mb-10 px-6">
-                        <div className="flex items-center gap-4">
-                            <Icon name={settings.soundEnabled ? "Volume2" : "VolumeX"} size={18} className="text-slate-500" />
-                            <input type="range" min="0" max="1" step="0.01" value={settings.volume} onChange={(e) => setSettings(s => ({...s, volume: parseFloat(e.target.value)}))} className="flex-1 h-[3px] bg-white/10 rounded-full appearance-none accent-blue-500" style={{ background: `linear-gradient(to right, #3b82f6 ${settings.volume * 100}%, rgba(255,255,255,0.1) ${settings.volume * 100}%)` }} />
-                        </div>
                         <div className="bg-white/[0.03] backdrop-blur-2xl border border-white/10 rounded-[2.5rem] p-4 flex items-center justify-around shadow-2xl">
                             <button onClick={() => { setIsActive(false); setElapsedTime(0); setPhase('ready'); setDisplayProgress(0); stopAudio(); }} className="p-4 rounded-full bg-white/5 text-slate-500 active:scale-90"><Icon name="RotateCcw" size={22} /></button>
-                            <button onClick={() => { if (!isActive) initAudio(); setIsActive(!isActive); }} className={`p-8 rounded-full transition-all active:scale-95 shadow-2xl relative ${isActive ? 'bg-white text-black hover:shadow-white/20' : 'bg-blue-600 text-white shadow-blue-600/30'}`}>
+                            <button onClick={() => { if (!isActive) initAudio(); setIsActive(!isActive); }} className={`p-8 rounded-full transition-all active:scale-95 shadow-2xl relative ${isActive ? 'bg-white text-black' : 'bg-blue-600 text-white'}`}>
                                 <Icon name={isActive ? "Pause" : "Play"} size={32} className={isActive ? "" : "ml-1"} />
                                 {!isActive && <div className="absolute inset-0 rounded-full border border-blue-400 animate-ping opacity-20"></div>}
                             </button>
@@ -347,48 +355,18 @@
                         </div>
                     </div>
 
-                    {showAI && (
-                        <div className="fixed inset-0 bg-black/95 backdrop-blur-xl z-[110] flex items-center justify-center p-6 animate-in">
-                            <div className="bg-slate-900/90 w-full max-w-sm rounded-[2.5rem] border border-white/10 p-8 space-y-6 shadow-2xl overflow-y-auto max-h-[90vh]">
-                                <div className="flex justify-between items-center mb-2">
-                                    <div className="flex items-center gap-2"><Icon name="Sparkles" size={16} className="text-blue-400" /><h3 className="text-sm font-medium tracking-widest uppercase text-white">AI 息道智引</h3></div>
-                                    <button onClick={() => setShowAI(false)} className="text-[10px] text-slate-500 uppercase">关闭</button>
-                                </div>
-                                <div className="space-y-4">
-                                    <textarea value={userMood} onChange={(e) => setUserMood(e.target.value)} placeholder="描述心境..." className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-sm font-light h-24 outline-none focus:border-blue-500/50 transition-all text-white" />
-                                    <button onClick={generateAISuggestion} disabled={isAIThinking || !userMood} className="w-full bg-blue-600 text-white rounded-2xl py-4 text-xs font-bold uppercase tracking-widest shadow-lg active:scale-95 disabled:opacity-50 transition-all flex items-center justify-center gap-2">
-                                        {isAIThinking ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> : "✨ 开启智引"}
-                                    </button>
-                                </div>
-                                {aiSuggestion && (
-                                    <div className="pt-6 border-t border-white/5 space-y-4 animate-in">
-                                        <div className="bg-blue-600/10 border border-blue-500/20 rounded-2xl p-4">
-                                            <p className="text-[10px] text-blue-400 uppercase mb-1">建议频率</p>
-                                            <p className="text-base font-light tabular-nums">吸 {aiSuggestion.inhale}s / 屏 {aiSuggestion.hold}s / 呼 {aiSuggestion.exhale}s</p>
-                                        </div>
-                                        <button onClick={() => { setSettings(p => ({...p, inhale: aiSuggestion.inhale, hold: aiSuggestion.hold, exhale: aiSuggestion.exhale})); setShowAI(false); }} className="w-full bg-white text-black rounded-2xl py-4 text-xs font-bold uppercase tracking-widest">同步至训练</button>
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    )}
-
                     {showSettings && (
                         <div className="fixed inset-0 bg-black/95 backdrop-blur-xl z-[100] flex items-center justify-center p-6 animate-in">
-                            <div className="bg-slate-900/90 w-full max-w-sm rounded-[2.5rem] border border-white/10 p-8 space-y-6 shadow-2xl overflow-y-auto max-h-[90vh]">
+                            <div className="bg-slate-900/90 w-full max-w-sm rounded-[2.5rem] border border-white/10 p-8 space-y-6 shadow-2xl max-h-[90vh] overflow-y-auto">
                                 <div className="flex justify-between items-center mb-4 sticky top-0 bg-transparent z-10">
                                     <h3 className="text-sm font-medium tracking-widest uppercase text-white">高级参数</h3>
-                                    <button onClick={() => setShowSettings(false)} className="text-[10px] bg-blue-600 px-4 py-2 rounded-full uppercase text-white font-bold shadow-lg shadow-blue-600/20">确认</button>
+                                    <button onClick={() => setShowSettings(false)} className="text-[10px] bg-blue-600 px-4 py-2 rounded-full uppercase text-white font-bold">确认</button>
                                 </div>
                                 
-                                {/* 运行模式选择 */}
                                 <div className="space-y-4 p-4 bg-white/5 rounded-2xl border border-white/5">
-                                    <label className="text-[10px] text-slate-400 uppercase tracking-widest flex items-center gap-2">系统运行策略</label>
-                                    <div className="grid grid-cols-2 gap-2">
-                                        {[
-                                            { id: 'background', label: '锁屏存活', icon: 'Shield' },
-                                            { id: 'wakelock', label: '屏幕常亮', icon: 'Zap' }
-                                        ].map(o => (
+                                    <label className="text-[10px] text-slate-400 uppercase tracking-widest">运行策略</label>
+                                    <div className="grid grid-cols-2 gap-2 mt-2">
+                                        {[{ id: 'background', label: '锁屏存活', icon: 'Shield' }, { id: 'wakelock', label: '屏幕常亮', icon: 'Zap' }].map(o => (
                                             <button key={o.id} onClick={() => setSettings(s => ({...s, runMode: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.runMode === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
                                                 <Icon name={o.icon} size={16} /> <span className="text-[9px]">{o.label}</span>
                                             </button>
@@ -396,10 +374,10 @@
                                     </div>
                                 </div>
 
-                                <div className="space-y-4 pt-4">
+                                <div className="space-y-2 pt-4 border-t border-white/5">
                                     <label className="text-[10px] text-slate-500 uppercase tracking-widest">转折音效类型</label>
-                                    <div className="grid grid-cols-2 gap-2">
-                                        {[{ id: 'muyu', label: '禅意木鱼', icon: 'Drum' }, { id: 'qing', label: '静心颂钵', icon: 'Bell' }, { id: 'drop', label: '灵动水滴', icon: 'Droplets' }, { id: 'none', label: '无音效', icon: 'Ban' }].map(o => (
+                                    <div className="grid grid-cols-2 gap-2 mt-2">
+                                        {[{ id: 'qing', label: '静心颂钵', icon: 'Bell' }, { id: 'muyu', label: '禅意木鱼', icon: 'Drum' }, { id: 'drop', label: '灵动水滴', icon: 'Droplets' }, { id: 'none', label: '无音效', icon: 'Ban' }].map(o => (
                                             <button key={o.id} onClick={() => setSettings(s => ({...s, transitionSound: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.transitionSound === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
                                                 <Icon name={o.icon} size={16} /> <span className="text-[9px]">{o.label}</span>
                                             </button>
@@ -407,10 +385,10 @@
                                     </div>
                                 </div>
 
-                                <div className="space-y-4 pt-4 border-t border-white/5">
-                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">背景环境</label>
-                                    <div className="grid grid-cols-2 gap-2">
-                                        {[{ id: 'stream', label: '幽谷流水', icon: 'Waves' }, { id: 'rain', label: '静谧细雨', icon: 'CloudRain' }, { id: 'forest', label: '深山松涛', icon: 'Trees' }, { id: 'none', label: '无背景音', icon: 'Ban' }].map(o => (
+                                <div className="space-y-2 pt-4 border-t border-white/5">
+                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">背景声音</label>
+                                    <div className="grid grid-cols-3 gap-2 mt-2">
+                                        {[{ id: 'none', label: '无', icon: 'Ban' }, { id: 'stream', label: '流水', icon: 'Waves' }, { id: 'rain', label: '细雨', icon: 'CloudRain' }].map(o => (
                                             <button key={o.id} onClick={() => setSettings(s => ({...s, bgType: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.bgType === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
                                                 <Icon name={o.icon} size={16} /> <span className="text-[9px]">{o.label}</span>
                                             </button>
@@ -431,25 +409,16 @@
                                     ))}
                                 </div>
                                 
-                                <div className="pt-8 mt-4 border-t border-white/5 flex flex-col items-center gap-2">
-                                    <span className="text-[9px] text-slate-600 uppercase tracking-tighter">当前版本 v{APP_VERSION}</span>
-                                    <button onClick={() => { if ('serviceWorker' in navigator) { navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister())); window.location.reload(true); } else window.location.reload(true); }} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/5 text-slate-500 active:scale-95 transition-all text-[10px] uppercase tracking-widest">
-                                        <Icon name="Refresh" size={12} /> 强制重载应用
-                                    </button>
+                                <div className="pt-8 border-t border-white/5 flex flex-col items-center gap-2">
+                                    <span className="text-[9px] text-slate-600 uppercase tracking-tighter">v{APP_VERSION} 锁屏增强版</span>
+                                    <button onClick={() => window.location.reload(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/5 text-slate-500 text-[10px] uppercase tracking-widest">强制重载</button>
                                 </div>
                             </div>
                         </div>
                     )}
-
-                    <style>{`
-                        input[type='range']::-webkit-slider-thumb { -webkit-appearance: none; height: 16px; width: 16px; border-radius: 50%; background: #ffffff; box-shadow: 0 0 10px rgba(59, 130, 246, 0.5); cursor: pointer; border: 2px solid #3b82f6; }
-                        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-                        .animate-in { animation: fadeIn 0.3s ease-out forwards; }
-                    `}</style>
                 </div>
             );
         };
-
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
     </script>
