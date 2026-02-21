@@ -1,6 +1,6 @@
 {
-  "short_name": "??AI",
-  "name": "?? - ???? AI ???",
+  "short_name": "息道AI",
+  "name": "息道 - 丹田呼吸 AI 训练器",
   "icons": [
     {
       "src": "icon-512.png",
@@ -14,6 +14,5 @@
   "display": "standalone",
   "scope": "./",
   "theme_color": "#010204",
-  "description": "?? Gemini AI ??????????? App"
+  "description": "融合 Gemini AI 的专业自然原声呼吸训练 App"
 }
-
