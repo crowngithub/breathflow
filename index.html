@@ -24,8 +24,8 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback } = React;
 
-        // 应用版本 v1.9.6 - 彻底移除导致自动刷新的监听器
-        const APP_VERSION = "1.9.6";
+        // 应用版本 v1.9.7 - 自然音效仿真优化
+        const APP_VERSION = "1.9.7";
         const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
 
         const Icon = ({ name, size = 24, className = "" }) => {
@@ -41,7 +41,6 @@
                 Clock: <><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
                 Waves: <><path d="M2 6c.6.5 1.2 1 2.5 1s2.5-1 4-1 2.6 1 4 1 2.5-1 4-1 2.5 1 4 1"/><path d="M2 12c.6.5 1.2 1 2.5 1s2.5-1 4-1 2.6 1 4 1 2.5-1 4-1 2.5 1 4 1"/><path d="M2 18c.6.5 1.2 1 2.5 1s2.5-1 4-1 2.6 1 4 1 2.5-1 4-1 2.5 1 4 1"/></>,
                 CloudRain: <path d="M20 16.2A4.5 4.5 0 0 0 17.5 8h-1.8A7 7 0 1 0 4 14.9M12 18v4M8 18v2M16 18v2"/>,
-                Trees: <path d="m11 11-4 4h8l-4-4ZM11 4l-5 5h10l-5-5ZM11 15v5"/>,
                 Bell: <><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></>,
                 Drum: <path d="M12 2v20M5 7l14 10M5 17l14-10" />,
                 Droplets: <path d="M7 16.3c2.2 0 4-1.8 4-4 0-3.3-4-8-4-8s-4 4.7-4 8c0 2.2 1.8 4 4 4Z" />,
@@ -87,6 +86,7 @@
             const whiteGainRef = useRef(null); 
             const brownGainRef = useRef(null); 
             const bgFilterRef = useRef(null);
+            const modGainRef = useRef(null); // 随机调制增益，用于模拟雨滴
             const keepAliveNodeRef = useRef(null);
             const animationFrameRef = useRef(null);
             const wakeLockRef = useRef(null);
@@ -96,7 +96,6 @@
             const isActiveRef = useRef(isActive);
             useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
 
-            // --- 核心修复：彻底禁绝自动刷新循环 ---
             useEffect(() => {
                 const lastVersion = localStorage.getItem('breathflow_version');
                 if (lastVersion && lastVersion !== APP_VERSION) {
@@ -107,12 +106,10 @@
 
                 const protocol = window.location.protocol;
                 if ('serviceWorker' in navigator && (protocol === 'https:' || protocol === 'http:')) {
-                    // 仅注册，不添加任何 controllerchange 自动重载监听器
                     navigator.serviceWorker.register('./sw.js').catch(() => {});
                 }
             }, []);
 
-            // 强力同步：仅由用户点击触发，解决卡死问题
             const forceFullReload = async () => {
                 try {
                     if ('serviceWorker' in navigator) {
@@ -193,9 +190,9 @@
                 osc.start(); keepAliveNodeRef.current = osc;
 
                 const timer = setInterval(() => {
-                    const currentCtx = audioCtxRef.current; 
-                    if (!isActiveRef.current || !currentCtx) return;
-                    const now = currentCtx.currentTime;
+                    const cCtx = audioCtxRef.current; 
+                    if (!isActiveRef.current || !cCtx) return;
+                    const now = cCtx.currentTime;
                     const totalSec = settings.inhale + settings.hold + settings.exhale;
                     if (nextScheduleTimeRef.current < now + 0.3) {
                         scheduleTone(nextScheduleTimeRef.current);
@@ -211,7 +208,7 @@
                 return () => clearInterval(timer);
             }, [isActive, settings.inhale, settings.hold, settings.exhale, scheduleTone]);
 
-            // --- 渲染引擎：恒定背景音版本 ---
+            // --- 渲染引擎：恒定背景音与仿真逻辑 ---
             useEffect(() => {
                 if (!isActive) {
                    const now = audioCtxRef.current?.currentTime || 0;
@@ -232,15 +229,32 @@
                     setPhase(cPh); setDisplayProgress(cPr);
 
                     const now = ctx.currentTime;
-                    let wG = 0, bG = 0, freq = 600;
+                    let wG = 0, bG = 0, freq = 600, mG = 1.0;
+                    
                     switch(settings.bgType) {
-                        case 'rain': wG = settings.volume * 0.4; bG = settings.volume * 0.15; freq = 1200; break;
-                        case 'wind': bG = settings.volume * 0.5; freq = 400; break;
-                        case 'white': wG = settings.volume * 0.3; freq = 2000; break;
+                        case 'rain': 
+                            // 雨声：高频白噪音 + 低频布朗 + 快速随机调制（雨滴感）
+                            wG = settings.volume * 0.35; 
+                            bG = settings.volume * 0.1; 
+                            freq = 1500; 
+                            mG = 0.8 + Math.random() * 0.4; // 模拟雨滴密集度的细微随机波动
+                            break;
+                        case 'wind': 
+                            // 风声：深沉布朗噪声 + 低频带通 + 极慢随机波动（呼啸感）
+                            bG = settings.volume * 0.5 * (0.9 + Math.sin(now * 0.3) * 0.1); 
+                            freq = 300 + Math.sin(now * 0.2) * 100; // 风压的随机飘移
+                            break;
+                        case 'white': 
+                            // 白噪音：平衡的中频噪音
+                            wG = settings.volume * 0.25; 
+                            freq = 1800; 
+                            break;
                     }
+                    
                     if (whiteGainRef.current) whiteGainRef.current.gain.setTargetAtTime(wG, now, 0.5);
                     if (brownGainRef.current) brownGainRef.current.gain.setTargetAtTime(bG, now, 0.5);
                     if (bgFilterRef.current) bgFilterRef.current.frequency.setTargetAtTime(freq, now, 0.5);
+                    if (modGainRef.current) modGainRef.current.gain.setTargetAtTime(mG, now, 0.05);
 
                     animationFrameRef.current = requestAnimationFrame(animate);
                 };
@@ -258,6 +272,7 @@
                 try {
                     const ctx = new (window.AudioContext || window.webkitAudioContext)();
                     audioCtxRef.current = ctx;
+                    
                     const bufferSize = 2 * ctx.sampleRate;
                     const whiteBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
                     const brownBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
@@ -268,14 +283,23 @@
                         const white = Math.random() * 2 - 1;
                         bD[i] = (lastOut + (0.02 * white)) / 1.002; lastOut = bD[i]; bD[i] *= 3.5;
                     }
+                    
                     const wSrc = ctx.createBufferSource(); wSrc.buffer = whiteBuffer; wSrc.loop = true;
                     const bSrc = ctx.createBufferSource(); bSrc.buffer = brownBuffer; bSrc.loop = true;
+                    
                     const filter = ctx.createBiquadFilter(); filter.type = 'lowpass';
                     const wGain = ctx.createGain(); const bGain = ctx.createGain();
+                    const modGain = ctx.createGain(); // 用于模拟雨滴颗粒感的二级增益
+                    
                     wGain.gain.value = 0; bGain.gain.value = 0;
-                    wSrc.connect(wGain); wGain.connect(filter); bSrc.connect(bGain); bGain.connect(filter); filter.connect(ctx.destination);
+                    
+                    wSrc.connect(wGain); bSrc.connect(bGain);
+                    wGain.connect(modGain); bGain.connect(modGain);
+                    modGain.connect(filter); filter.connect(ctx.destination);
+                    
                     wSrc.start(); bSrc.start();
-                    whiteGainRef.current = wGain; brownGainRef.current = bGain; bgFilterRef.current = filter;
+                    whiteGainRef.current = wGain; brownGainRef.current = bGain;
+                    bgFilterRef.current = filter; modGainRef.current = modGain;
                 } catch (e) { console.error(e); }
             };
 
@@ -321,7 +345,7 @@
                            <Icon name="Check" size={18} />
                            <div className="flex flex-col">
                               <span className="text-sm font-bold tracking-wide">版本已就绪 v{APP_VERSION}</span>
-                              <span className="text-[10px] opacity-80">已移除自动刷新以提升稳定性</span>
+                              <span className="text-[10px] opacity-80">已修复背景音选项逻辑</span>
                            </div>
                         </div>
                     )}
@@ -331,7 +355,7 @@
                             <h1 className="text-2xl font-extralight tracking-[0.4em] text-white">息道</h1>
                             <div className="flex items-center gap-2 mt-1">
                                 <div className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-green-500 animate-pulse' : 'bg-slate-600'}`}></div>
-                                <span className="text-[10px] text-slate-500 tracking-widest uppercase font-medium">Stable Flow Mode</span>
+                                <span className="text-[10px] text-slate-500 tracking-widest uppercase font-medium">Natural Audio Mode</span>
                             </div>
                         </div>
                         <div className="flex items-center gap-3">
@@ -442,13 +466,13 @@
                                 </div>
 
                                 <div className="space-y-2 pt-4 border-t border-white/5">
-                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">背景声音 (恒定音量)</label>
+                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">仿真环境音选择 (恒定音量)</label>
                                     <div className="grid grid-cols-2 gap-2 mt-2">
                                         {[ 
-                                            { id: 'none', label: '无背景音', icon: 'Ban' }, 
-                                            { id: 'rain', label: '下雨声音', icon: 'CloudRain' }, 
+                                            { id: 'none', label: '完全安静', icon: 'Ban' }, 
+                                            { id: 'rain', label: '自然雨声', icon: 'CloudRain' }, 
                                             { id: 'wind', label: '空灵风声', icon: 'Wind' },
-                                            { id: 'white', label: '白噪音', icon: 'Waves' } 
+                                            { id: 'white', label: '柔和噪音', icon: 'Waves' } 
                                         ].map(o => (
                                             <button key={o.id} onClick={() => setSettings(s => ({...s, bgType: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.bgType === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
                                                 <Icon name={o.icon} size={16} /> <span className="text-[9px]">{o.label}</span>
