@@ -24,7 +24,8 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback } = React;
 
-        // API Key 配置
+        // 当前应用版本 (修改此号有助于识别是否更新成功)
+        const APP_VERSION = "1.2.0";
         const apiKey = ""; 
 
         /**
@@ -47,7 +48,8 @@
                 Trees: <path d="m11 11-4 4h8l-4-4ZM11 4l-5 5h10l-5-5ZM11 15v5"/>,
                 Vibrate: <path d="M2 8 L4 10 L2 12 M22 8 L20 10 L22 12 M8 5 L16 5 A2 2 0 0 1 18 7 L18 17 A2 2 0 0 1 16 19 L8 19 A2 2 0 0 1 6 17 L6 7 A2 2 0 0 1 8 5 Z" />,
                 Ban: <><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></>,
-                Edit3: <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                Edit3: <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>,
+                Refresh: <path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"/>
             };
             return (
                 <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -84,11 +86,10 @@
             const animationFrameRef = useRef(null);
             const cycleStartTimeRef = useRef(null);
             
-            // 实时状态Ref，用于解决动画闭包内的状态同步问题
             const isActiveRef = useRef(isActive);
             useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
 
-            // --- 触感振动 ---
+            // --- 振动反馈 ---
             useEffect(() => {
                 if (isActive && phase !== 'ready' && settings.vibrationEnabled) {
                     if ("vibrate" in navigator) {
@@ -97,32 +98,53 @@
                 }
             }, [phase, isActive, settings.vibrationEnabled]);
 
-            // PWA 注册
+            // --- PWA 强制更新逻辑 ---
             useEffect(() => {
                 if ('serviceWorker' in navigator) {
                     const isSecure = window.location.protocol === 'https:' || window.location.hostname === 'localhost';
                     if (isSecure) {
-                        navigator.serviceWorker.register('./sw.js').catch(() => {});
+                        navigator.serviceWorker.register('./sw.js').then(reg => {
+                            // 检查是否有等待安装的新版本
+                            reg.addEventListener('updatefound', () => {
+                                const newWorker = reg.installing;
+                                newWorker.addEventListener('statechange', () => {
+                                    if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                                        // 发现新版本，告知用户或自动重载
+                                        console.log('新版本已就绪');
+                                    }
+                                });
+                            });
+                        }).catch(() => {});
                     }
                 }
             }, []);
 
-            // --- 核心修复：停止音频函数 ---
+            // --- 强制清除缓存并重载 ---
+            const forceUpdate = () => {
+                if ('serviceWorker' in navigator) {
+                    navigator.serviceWorker.getRegistrations().then(registrations => {
+                        for (let registration of registrations) {
+                            registration.unregister();
+                        }
+                        window.location.reload(true);
+                    });
+                } else {
+                    window.location.reload(true);
+                }
+            };
+
             const stopAudio = useCallback(() => {
                 if (!audioCtxRef.current) return;
                 const now = audioCtxRef.current.currentTime;
-                // 彻底取消所有排期的增益变化并迅速静音
                 [windGainRef, bgMainGainRef, bgWhiteGainRef, bgBrownGainRef].forEach(ref => {
                     if (ref.current) {
                         ref.current.gain.cancelScheduledValues(now);
-                        ref.current.gain.setTargetAtTime(0, now, 0.05); // 极速淡出
+                        ref.current.gain.setTargetAtTime(0, now, 0.05);
                     }
                 });
             }, []);
 
-            // --- 核心修复：实时更新音频参数 ---
             const updateAudioSmoothly = useCallback((cur, prog) => {
-                // 增加 isActiveRef 校验，如果已经停止，严禁更新增益
                 if (!isActiveRef.current || !settings.soundEnabled || !bgMainGainRef.current || !audioCtxRef.current) return;
                 
                 const now = audioCtxRef.current.currentTime;
@@ -147,7 +169,6 @@
                 if (windGainRef.current) windGainRef.current.gain.setTargetAtTime(wGl, now, 0.1);
             }, [settings.soundEnabled, settings.volume, settings.bgType]);
 
-            // --- 核心修复：动画主循环与状态锁 ---
             useEffect(() => {
                 if (!isActive) { 
                     stopAudio(); 
@@ -156,39 +177,20 @@
                 }
 
                 const totalCycle = (settings.inhale + settings.hold + settings.exhale) * 1000;
-                
                 const animate = (time) => {
-                    // 每一帧都先检查锁，确保暂停后立即跳出
                     if (!isActiveRef.current) return;
-
                     if (!cycleStartTimeRef.current) cycleStartTimeRef.current = time;
                     const elapsed = (time - cycleStartTimeRef.current) % totalCycle;
-                    
                     let cPh = 'inhale', cPr = 0;
                     const iM = settings.inhale * 1000, hM = settings.hold * 1000, eM = settings.exhale * 1000;
-                    
-                    if (elapsed < iM) {
-                        cPh = 'inhale'; cPr = elapsed / iM;
-                    } else if (elapsed < iM + hM) {
-                        cPh = 'hold'; cPr = (elapsed - iM) / hM;
-                    } else {
-                        const remaining = elapsed - iM - hM;
-                        cPh = 'exhale'; 
-                        cPr = eM > 0 ? Math.min(remaining / eM, 1) : 1;
-                    }
-
-                    setPhase(cPh);
-                    setDisplayProgress(cPr);
-                    updateAudioSmoothly(cPh, cPr);
-                    
+                    if (elapsed < iM) { cPh = 'inhale'; cPr = elapsed / iM; }
+                    else if (elapsed < iM + hM) { cPh = 'hold'; cPr = (elapsed - iM) / hM; }
+                    else { const remaining = elapsed - iM - hM; cPh = 'exhale'; cPr = eM > 0 ? Math.min(remaining / eM, 1) : 1; }
+                    setPhase(cPh); setDisplayProgress(cPr); updateAudioSmoothly(cPh, cPr);
                     animationFrameRef.current = requestAnimationFrame(animate);
                 };
-
                 animationFrameRef.current = requestAnimationFrame(animate);
-
-                return () => {
-                    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-                };
+                return () => { if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current); };
             }, [isActive, settings.inhale, settings.hold, settings.exhale, stopAudio, updateAudioSmoothly]);
 
             useEffect(() => {
@@ -242,7 +244,6 @@
                     const wG = ctx.createGain(); wG.gain.value = 0;
                     wSrc.connect(wF); wF.connect(wG); wG.connect(ctx.destination); wSrc.start();
                     windFilterRef.current = wF; windGainRef.current = wG;
-                    
                     const bgWSrc = ctx.createBufferSource(); bgWSrc.buffer = whiteBuffer; bgWSrc.loop = true;
                     const bgWG = ctx.createGain(); bgWG.gain.value = 0;
                     const bgBSrc = ctx.createBufferSource(); bgBSrc.buffer = brownBuffer; bgBSrc.loop = true;
@@ -411,6 +412,18 @@
                                             </div>
                                         </div>
                                     ))}
+                                </div>
+                                
+                                {/* 强制更新按钮：解决 PWA 缓存不更新的问题 */}
+                                <div className="pt-8 mt-4 border-t border-white/5 flex flex-col items-center gap-2">
+                                    <span className="text-[9px] text-slate-600 uppercase tracking-tighter">当前版本 v{APP_VERSION}</span>
+                                    <button 
+                                        onClick={forceUpdate}
+                                        className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/5 text-slate-500 active:scale-95 transition-all text-[10px] uppercase tracking-widest"
+                                    >
+                                        <Icon name="Refresh" size={12} />
+                                        强制检查更新
+                                    </button>
                                 </div>
                             </div>
                         </div>
