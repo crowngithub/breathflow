@@ -24,8 +24,8 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback } = React;
 
-        // 应用版本 v1.9.4 - 彻底修复循环刷新 Bug
-        const APP_VERSION = "1.9.4";
+        // 应用版本 v1.9.5 - 修复背景音选项无效及音量起伏问题
+        const APP_VERSION = "1.9.5";
         const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
 
         const Icon = ({ name, size = 24, className = "" }) => {
@@ -50,7 +50,8 @@
                 Shield: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>,
                 Zap: <path d="M13 2 L3 14 L12 14 L11 22 L21 10 L12 10 L13 2 Z"/>,
                 Check: <path d="M20 6 9 17l-5-5"/>,
-                RotateCw: <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
+                RotateCw: <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>,
+                Wind: <path d="M17.7 7.7a2.5 2.5 0 1 1 1.8 4.3H2M9.6 4.6A2 2 0 1 1 11 8H2M12.6 19.4A2 2 0 1 0 14 16H2" />
             };
             return (
                 <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -83,8 +84,9 @@
             const [updateToast, setUpdateToast] = useState(false);
 
             const audioCtxRef = useRef(null);
-            const windGainRef = useRef(null);
-            const bgMainGainRef = useRef(null);
+            const whiteGainRef = useRef(null); // 白噪音 (雨/白噪音)
+            const brownGainRef = useRef(null); // 布朗/粉红噪声 (风/流水)
+            const bgFilterRef = useRef(null);
             const keepAliveNodeRef = useRef(null);
             const animationFrameRef = useRef(null);
             const wakeLockRef = useRef(null);
@@ -94,7 +96,7 @@
             const isActiveRef = useRef(isActive);
             useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
 
-            // --- 关键修复：防止循环刷新的 ServiceWorker 逻辑 ---
+            // --- 核心修复：防止循环刷新的 ServiceWorker 逻辑 ---
             useEffect(() => {
                 const lastVersion = localStorage.getItem('breathflow_version');
                 if (lastVersion && lastVersion !== APP_VERSION) {
@@ -107,27 +109,23 @@
                 const isSupportedOrigin = protocol === 'https:' || protocol === 'http:';
                 
                 if ('serviceWorker' in navigator && isSupportedOrigin) {
-                    // 移除之前的 controllerchange 监听器，那是循环重载的元凶
                     navigator.serviceWorker.register('./sw.js')
                         .then(reg => {
                             reg.onupdatefound = () => {
                                 const installingWorker = reg.installing;
                                 if (installingWorker) {
                                     installingWorker.onstatechange = () => {
-                                        // 仅当新版本已安装好且当前已有控制者时，提示用户或准备更新
-                                        // 这里不再自动刷新，避免循环。
                                         if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                                            console.log('[App] 新版本已安装，重启应用以生效。');
+                                            console.log('[App] New version ready.');
                                         }
                                     };
                                 }
                             };
                         })
-                        .catch(err => console.log('SW Registration deferred.'));
+                        .catch(err => console.log('SW Registration skipped.'));
                 }
             }, []);
 
-            // 强力同步函数：清除所有可能导致循环的旧状态
             const forceFullReload = async () => {
                 try {
                     if ('serviceWorker' in navigator) {
@@ -139,7 +137,6 @@
                         for (let key of keys) await caches.delete(key);
                     }
                     localStorage.removeItem('breathflow_version');
-                    // 通过添加随机查询字符串跳过服务器端缓存
                     window.location.href = window.location.origin + window.location.pathname + '?sync=' + Date.now();
                 } catch (e) {
                     window.location.reload(true);
@@ -230,12 +227,15 @@
                 return () => clearInterval(timer);
             }, [isActive, settings.inhale, settings.hold, settings.exhale, scheduleTone]);
 
+            // --- 音频渲染引擎修复：恒定背景音逻辑 ---
             useEffect(() => {
                 if (!isActive) {
                    const now = audioCtxRef.current?.currentTime || 0;
-                   if (bgMainGainRef.current) bgMainGainRef.current.gain.setTargetAtTime(0, now, 0.1);
+                   if (whiteGainRef.current) whiteGainRef.current.gain.setTargetAtTime(0, now, 0.1);
+                   if (brownGainRef.current) brownGainRef.current.gain.setTargetAtTime(0, now, 0.1);
                    return;
                 }
+                
                 const animate = () => {
                     const ctx = audioCtxRef.current;
                     if (!isActiveRef.current || !ctx) return;
@@ -247,9 +247,31 @@
                     else if (elapsed < i + h) { cPh = 'hold'; cPr = (elapsed - i) / h; }
                     else { cPh = 'exhale'; cPr = e > 0 ? (elapsed - i - h) / e : 1; }
                     setPhase(cPh); setDisplayProgress(cPr);
-                    if (bgMainGainRef.current) {
-                        bgMainGainRef.current.gain.setTargetAtTime(settings.volume * (settings.bgType === 'none' ? 0 : 0.4), ctx.currentTime, 0.5);
+
+                    // 恒定音量更新逻辑
+                    const now = ctx.currentTime;
+                    let wG = 0, bG = 0, freq = 600;
+                    
+                    switch(settings.bgType) {
+                        case 'rain': 
+                            wG = settings.volume * 0.4; bG = settings.volume * 0.15; freq = 1200; 
+                            break;
+                        case 'wind': 
+                            bG = settings.volume * 0.5; freq = 400; 
+                            break;
+                        case 'white': 
+                            wG = settings.volume * 0.3; freq = 2000; 
+                            break;
+                        case 'none': 
+                        default: 
+                            wG = 0; bG = 0; 
+                            break;
                     }
+
+                    if (whiteGainRef.current) whiteGainRef.current.gain.setTargetAtTime(wG, now, 0.5);
+                    if (brownGainRef.current) brownGainRef.current.gain.setTargetAtTime(bG, now, 0.5);
+                    if (bgFilterRef.current) bgFilterRef.current.frequency.setTargetAtTime(freq, now, 0.5);
+
                     animationFrameRef.current = requestAnimationFrame(animate);
                 };
                 animationFrameRef.current = requestAnimationFrame(animate);
@@ -266,8 +288,37 @@
                 try {
                     const ctx = new (window.AudioContext || window.webkitAudioContext)();
                     audioCtxRef.current = ctx;
-                    const bgMainG = ctx.createGain(); bgMainG.gain.value = 0;
-                    bgMainG.connect(ctx.destination); bgMainGainRef.current = bgMainG;
+                    
+                    const bufferSize = 2 * ctx.sampleRate;
+                    const whiteBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+                    const brownBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+                    const wD = whiteBuffer.getChannelData(0);
+                    const bD = brownBuffer.getChannelData(0);
+                    let lastOut = 0;
+                    for (let i = 0; i < bufferSize; i++) {
+                        wD[i] = Math.random() * 2 - 1;
+                        const white = Math.random() * 2 - 1;
+                        bD[i] = (lastOut + (0.02 * white)) / 1.002;
+                        lastOut = bD[i];
+                        bD[i] *= 3.5;
+                    }
+
+                    const wSrc = ctx.createBufferSource(); wSrc.buffer = whiteBuffer; wSrc.loop = true;
+                    const bSrc = ctx.createBufferSource(); bSrc.buffer = brownBuffer; bSrc.loop = true;
+                    
+                    const filter = ctx.createBiquadFilter(); filter.type = 'lowpass';
+                    const wGain = ctx.createGain(); const bGain = ctx.createGain();
+                    wGain.gain.value = 0; bGain.gain.value = 0;
+
+                    wSrc.connect(wGain); wGain.connect(filter);
+                    bSrc.connect(bGain); bGain.connect(filter);
+                    filter.connect(ctx.destination);
+                    
+                    wSrc.start(); bSrc.start();
+                    
+                    whiteGainRef.current = wGain;
+                    brownGainRef.current = bGain;
+                    bgFilterRef.current = filter;
                 } catch (e) { console.error(e); }
             };
 
@@ -437,9 +488,14 @@
                                 </div>
 
                                 <div className="space-y-2 pt-4 border-t border-white/5">
-                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">背景声音环境</label>
-                                    <div className="grid grid-cols-3 gap-2 mt-2">
-                                        {[ { id: 'none', label: '无', icon: 'Ban' }, { id: 'stream', label: '流水', icon: 'Waves' }, { id: 'rain', label: '细雨', icon: 'CloudRain' } ].map(o => (
+                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">背景声音选择 (恒定音量)</label>
+                                    <div className="grid grid-cols-2 gap-2 mt-2">
+                                        {[ 
+                                            { id: 'none', label: '无背景音', icon: 'Ban' }, 
+                                            { id: 'rain', label: '静谧细雨', icon: 'CloudRain' }, 
+                                            { id: 'wind', label: '空灵风声', icon: 'Wind' },
+                                            { id: 'white', label: '纯白噪音', icon: 'Waves' } 
+                                        ].map(o => (
                                             <button key={o.id} onClick={() => setSettings(s => ({...s, bgType: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.bgType === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
                                                 <Icon name={o.icon} size={16} /> <span className="text-[9px]">{o.label}</span>
                                             </button>
@@ -477,7 +533,7 @@
                                         onClick={forceFullReload}
                                         className="mt-2 flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600/10 text-red-500 text-[10px] uppercase tracking-widest active:scale-95 border border-red-500/20"
                                     >
-                                        <Icon name="RotateCw" size={12} /> 强制强力同步 (解决刷新死循环)
+                                        <Icon name="RotateCw" size={12} /> 强制强力同步 (解决所有缓存问题)
                                     </button>
                                 </div>
                             </div>
