@@ -24,8 +24,8 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback } = React;
 
-        // 应用版本 v1.9.7 - 自然音效仿真优化
-        const APP_VERSION = "1.9.7";
+        // 应用版本 v1.9.8 - 突破 iOS 锁屏后台声音限制
+        const APP_VERSION = "1.9.8";
         const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
 
         const Icon = ({ name, size = 24, className = "" }) => {
@@ -86,7 +86,7 @@
             const whiteGainRef = useRef(null); 
             const brownGainRef = useRef(null); 
             const bgFilterRef = useRef(null);
-            const modGainRef = useRef(null); // 随机调制增益，用于模拟雨滴
+            const modGainRef = useRef(null);
             const keepAliveNodeRef = useRef(null);
             const animationFrameRef = useRef(null);
             const wakeLockRef = useRef(null);
@@ -96,6 +96,7 @@
             const isActiveRef = useRef(isActive);
             useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
 
+            // PWA 与版本管理
             useEffect(() => {
                 const lastVersion = localStorage.getItem('breathflow_version');
                 if (lastVersion && lastVersion !== APP_VERSION) {
@@ -103,9 +104,7 @@
                     setTimeout(() => setUpdateToast(false), 5000);
                 }
                 localStorage.setItem('breathflow_version', APP_VERSION);
-
-                const protocol = window.location.protocol;
-                if ('serviceWorker' in navigator && (protocol === 'https:' || protocol === 'http:')) {
+                if ('serviceWorker' in navigator) {
                     navigator.serviceWorker.register('./sw.js').catch(() => {});
                 }
             }, []);
@@ -125,25 +124,7 @@
                 } catch (e) { window.location.reload(true); }
             };
 
-            const toggleWakeLock = async (enable) => {
-                if ('wakeLock' in navigator) {
-                    try {
-                        if (enable && !wakeLockRef.current) {
-                            wakeLockRef.current = await navigator.wakeLock.request('screen');
-                        } else if (!enable && wakeLockRef.current) {
-                            await wakeLockRef.current.release();
-                            wakeLockRef.current = null;
-                        }
-                    } catch (err) {}
-                }
-            };
-
-            useEffect(() => {
-                if (isActive && settings.runMode === 'wakelock') toggleWakeLock(true);
-                else toggleWakeLock(false);
-                return () => toggleWakeLock(false);
-            }, [isActive, settings.runMode]);
-
+            // --- 核心优化：锁屏后台音频存活与调度逻辑 ---
             const scheduleTone = useCallback((time) => {
                 if (settings.transitionSound === 'none' || !audioCtxRef.current) return;
                 const ctx = audioCtxRef.current;
@@ -174,48 +155,102 @@
                 }
             }, [settings.transitionSound, settings.volume]);
 
+            // 初始化后台音频引擎与系统锁机制
+            const initAudioAndLock = async () => {
+                if (audioCtxRef.current) { if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume(); }
+                else {
+                    try {
+                        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                        audioCtxRef.current = ctx;
+                        
+                        const bufferSize = 2 * ctx.sampleRate;
+                        const whiteBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+                        const brownBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+                        const wD = whiteBuffer.getChannelData(0); const bD = brownBuffer.getChannelData(0);
+                        let lastOut = 0;
+                        for (let i = 0; i < bufferSize; i++) {
+                            wD[i] = Math.random() * 2 - 1;
+                            const white = Math.random() * 2 - 1;
+                            bD[i] = (lastOut + (0.02 * white)) / 1.002; lastOut = bD[i]; bD[i] *= 3.5;
+                        }
+                        const wSrc = ctx.createBufferSource(); wSrc.buffer = whiteBuffer; wSrc.loop = true;
+                        const bSrc = ctx.createBufferSource(); bSrc.buffer = brownBuffer; bSrc.loop = true;
+                        const filter = ctx.createBiquadFilter(); filter.type = 'lowpass';
+                        const wGain = ctx.createGain(); const bGain = ctx.createGain();
+                        const modGain = ctx.createGain();
+                        wGain.gain.value = 0; bGain.gain.value = 0;
+                        wSrc.connect(wGain); bSrc.connect(bGain);
+                        wGain.connect(modGain); bGain.connect(modGain);
+                        modGain.connect(filter); filter.connect(ctx.destination);
+                        wSrc.start(); bSrc.start();
+                        whiteGainRef.current = wGain; brownGainRef.current = bGain;
+                        bgFilterRef.current = filter; modGainRef.current = modGain;
+                    } catch (e) { console.error(e); }
+                }
+
+                // 屏幕常亮锁
+                if ('wakeLock' in navigator && settings.runMode === 'wakelock') {
+                    try { wakeLockRef.current = await navigator.wakeLock.request('screen'); } catch (err) {}
+                }
+
+                // --- 重要：向 iOS 注册媒体播放锁，防止后台静音 ---
+                if ('mediaSession' in navigator) {
+                    navigator.mediaSession.playbackState = 'playing';
+                    navigator.mediaSession.metadata = new MediaMetadata({
+                        title: '息道 - 丹田呼吸',
+                        artist: '禅修引导',
+                        album: '背景保活模式中'
+                    });
+                }
+            };
+
+            // 锁屏调度核心
             useEffect(() => {
                 if (!isActive) {
                     if (keepAliveNodeRef.current) { keepAliveNodeRef.current.stop(); keepAliveNodeRef.current = null; }
+                    if (wakeLockRef.current) { wakeLockRef.current.release(); wakeLockRef.current = null; }
+                    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
                     return;
                 }
+                
                 const ctx = audioCtxRef.current;
                 if (!ctx) return;
                 cycleStartTimeAudioRef.current = ctx.currentTime;
                 nextScheduleTimeRef.current = ctx.currentTime;
 
-                const osc = ctx.createOscillator(); const gain = ctx.createGain();
-                osc.frequency.value = 1.0; gain.gain.value = 0.0001;
-                osc.connect(gain); gain.connect(ctx.destination);
-                osc.start(); keepAliveNodeRef.current = osc;
+                // 强制开启一个循环的静默音频采样流，这是 iOS 保活的最高优先级
+                const silenceBuffer = ctx.createBuffer(1, 1, 22050);
+                const silenceSrc = ctx.createBufferSource();
+                silenceSrc.buffer = silenceBuffer;
+                silenceSrc.loop = true;
+                silenceSrc.start();
+                keepAliveNodeRef.current = silenceSrc;
 
-                const timer = setInterval(() => {
+                // 每 100ms 检查一次，提前调度 1.5s 的声音 (应对 iOS 深度休眠)
+                const scheduler = setInterval(() => {
                     const cCtx = audioCtxRef.current; 
                     if (!isActiveRef.current || !cCtx) return;
                     const now = cCtx.currentTime;
                     const totalSec = settings.inhale + settings.hold + settings.exhale;
-                    if (nextScheduleTimeRef.current < now + 0.3) {
+                    
+                    // 这里采用 Look-ahead 策略：提前计算排队音效
+                    while (nextScheduleTimeRef.current < now + 1.5) {
                         scheduleTone(nextScheduleTimeRef.current);
                         const elapsed = (nextScheduleTimeRef.current - cycleStartTimeAudioRef.current) % totalSec;
                         let nextIn;
                         const iS = settings.inhale, hS = settings.hold;
-                        if (elapsed < iS - 0.02) nextIn = iS - elapsed;
-                        else if (elapsed < iS + hS - 0.02) nextIn = (iS + hS) - elapsed;
+                        if (elapsed < iS - 0.01) nextIn = iS - elapsed;
+                        else if (elapsed < iS + hS - 0.01) nextIn = (iS + hS) - elapsed;
                         else nextIn = totalSec - elapsed;
                         nextScheduleTimeRef.current += Math.max(nextIn, 0.1);
                     }
-                }, 50);
-                return () => clearInterval(timer);
+                }, 100);
+                return () => clearInterval(scheduler);
             }, [isActive, settings.inhale, settings.hold, settings.exhale, scheduleTone]);
 
-            // --- 渲染引擎：恒定背景音与仿真逻辑 ---
+            // 同步渲染引擎
             useEffect(() => {
-                if (!isActive) {
-                   const now = audioCtxRef.current?.currentTime || 0;
-                   if (whiteGainRef.current) whiteGainRef.current.gain.setTargetAtTime(0, now, 0.1);
-                   if (brownGainRef.current) brownGainRef.current.gain.setTargetAtTime(0, now, 0.1);
-                   return;
-                }
+                if (!isActive) return;
                 const animate = () => {
                     const ctx = audioCtxRef.current;
                     if (!isActiveRef.current || !ctx) return;
@@ -230,27 +265,11 @@
 
                     const now = ctx.currentTime;
                     let wG = 0, bG = 0, freq = 600, mG = 1.0;
-                    
                     switch(settings.bgType) {
-                        case 'rain': 
-                            // 雨声：高频白噪音 + 低频布朗 + 快速随机调制（雨滴感）
-                            wG = settings.volume * 0.35; 
-                            bG = settings.volume * 0.1; 
-                            freq = 1500; 
-                            mG = 0.8 + Math.random() * 0.4; // 模拟雨滴密集度的细微随机波动
-                            break;
-                        case 'wind': 
-                            // 风声：深沉布朗噪声 + 低频带通 + 极慢随机波动（呼啸感）
-                            bG = settings.volume * 0.5 * (0.9 + Math.sin(now * 0.3) * 0.1); 
-                            freq = 300 + Math.sin(now * 0.2) * 100; // 风压的随机飘移
-                            break;
-                        case 'white': 
-                            // 白噪音：平衡的中频噪音
-                            wG = settings.volume * 0.25; 
-                            freq = 1800; 
-                            break;
+                        case 'rain': wG = settings.volume * 0.35; bG = settings.volume * 0.1; freq = 1500; mG = 0.8 + Math.random() * 0.4; break;
+                        case 'wind': bG = settings.volume * 0.5 * (0.9 + Math.sin(now * 0.3) * 0.1); freq = 300 + Math.sin(now * 0.2) * 100; break;
+                        case 'white': wG = settings.volume * 0.25; freq = 1800; break;
                     }
-                    
                     if (whiteGainRef.current) whiteGainRef.current.gain.setTargetAtTime(wG, now, 0.5);
                     if (brownGainRef.current) brownGainRef.current.gain.setTargetAtTime(bG, now, 0.5);
                     if (bgFilterRef.current) bgFilterRef.current.frequency.setTargetAtTime(freq, now, 0.5);
@@ -266,42 +285,6 @@
                 let t; if (isActive) t = setInterval(() => setElapsedTime(p => p + 1), 1000);
                 return () => clearInterval(t);
             }, [isActive]);
-
-            const initAudio = () => {
-                if (audioCtxRef.current) { if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume(); return; }
-                try {
-                    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-                    audioCtxRef.current = ctx;
-                    
-                    const bufferSize = 2 * ctx.sampleRate;
-                    const whiteBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-                    const brownBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-                    const wD = whiteBuffer.getChannelData(0); const bD = brownBuffer.getChannelData(0);
-                    let lastOut = 0;
-                    for (let i = 0; i < bufferSize; i++) {
-                        wD[i] = Math.random() * 2 - 1;
-                        const white = Math.random() * 2 - 1;
-                        bD[i] = (lastOut + (0.02 * white)) / 1.002; lastOut = bD[i]; bD[i] *= 3.5;
-                    }
-                    
-                    const wSrc = ctx.createBufferSource(); wSrc.buffer = whiteBuffer; wSrc.loop = true;
-                    const bSrc = ctx.createBufferSource(); bSrc.buffer = brownBuffer; bSrc.loop = true;
-                    
-                    const filter = ctx.createBiquadFilter(); filter.type = 'lowpass';
-                    const wGain = ctx.createGain(); const bGain = ctx.createGain();
-                    const modGain = ctx.createGain(); // 用于模拟雨滴颗粒感的二级增益
-                    
-                    wGain.gain.value = 0; bGain.gain.value = 0;
-                    
-                    wSrc.connect(wGain); bSrc.connect(bGain);
-                    wGain.connect(modGain); bGain.connect(modGain);
-                    modGain.connect(filter); filter.connect(ctx.destination);
-                    
-                    wSrc.start(); bSrc.start();
-                    whiteGainRef.current = wGain; brownGainRef.current = bGain;
-                    bgFilterRef.current = filter; modGainRef.current = modGain;
-                } catch (e) { console.error(e); }
-            };
 
             const callGemini = async (prompt, sys) => {
                 let delay = 1000;
@@ -343,9 +326,9 @@
                     {updateToast && (
                         <div className="fixed top-12 left-1/2 -translate-x-1/2 z-[200] bg-blue-600 text-white px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-4 duration-500">
                            <Icon name="Check" size={18} />
-                           <div className="flex flex-col">
-                              <span className="text-sm font-bold tracking-wide">版本已就绪 v{APP_VERSION}</span>
-                              <span className="text-[10px] opacity-80">已修复背景音选项逻辑</span>
+                           <div className="flex flex-col text-left">
+                              <span className="text-sm font-bold tracking-wide">后台优化版已就绪 v{APP_VERSION}</span>
+                              <span className="text-[10px] opacity-80">支持 iOS 锁屏持续发声</span>
                            </div>
                         </div>
                     )}
@@ -355,7 +338,7 @@
                             <h1 className="text-2xl font-extralight tracking-[0.4em] text-white">息道</h1>
                             <div className="flex items-center gap-2 mt-1">
                                 <div className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-green-500 animate-pulse' : 'bg-slate-600'}`}></div>
-                                <span className="text-[10px] text-slate-500 tracking-widest uppercase font-medium">Natural Audio Mode</span>
+                                <span className="text-[10px] text-slate-500 tracking-widest uppercase font-medium">Background Mode</span>
                             </div>
                         </div>
                         <div className="flex items-center gap-3">
@@ -368,7 +351,7 @@
                         {isActive && (
                             <div className="absolute top-0 flex items-center gap-2 bg-blue-500/10 px-4 py-2 rounded-xl text-[9px] text-blue-400/80 tracking-widest uppercase animate-pulse z-30">
                                 <Icon name={settings.runMode === 'wakelock' ? "Zap" : "Shield"} size={10} />
-                                {settings.runMode === 'wakelock' ? "常亮模式：禁止休眠" : "背景存活：息屏不休眠"}
+                                {settings.runMode === 'wakelock' ? "高优先级锁定" : "系统媒体 Session 激活中"}
                             </div>
                         )}
                         <div className="absolute w-[500px] h-[500px] rounded-full blur-[100px] transition-all duration-1000" style={{ backgroundColor: color, opacity: opacity * 0.3 }}></div>
@@ -408,8 +391,8 @@
                         </div>
 
                         <div className="bg-white/[0.03] backdrop-blur-2xl border border-white/10 rounded-[2.5rem] p-4 flex items-center justify-around shadow-2xl">
-                            <button onClick={() => { setIsActive(false); setElapsedTime(0); setPhase('ready'); setDisplayProgress(0); }} className="p-4 rounded-full bg-white/5 text-slate-500 active:scale-90"><Icon name="RotateCcw" size={22} /></button>
-                            <button onClick={() => { if (!isActive) initAudio(); setIsActive(!isActive); }} className={`p-8 rounded-full transition-all active:scale-95 shadow-2xl relative ${isActive ? 'bg-white text-black' : 'bg-blue-600 text-white shadow-blue-600/30'}`}>
+                            <button onClick={() => { setIsActive(false); setElapsedTime(0); setPhase('ready'); stopAudio(); }} className="p-4 rounded-full bg-white/5 text-slate-500 active:scale-90"><Icon name="RotateCcw" size={22} /></button>
+                            <button onClick={() => { if (!isActive) initAudioAndLock(); setIsActive(!isActive); }} className={`p-8 rounded-full transition-all active:scale-95 shadow-2xl relative ${isActive ? 'bg-white text-black' : 'bg-blue-600 text-white shadow-blue-600/30'}`}>
                                 <Icon name={isActive ? "Pause" : "Play"} size={32} className={isActive ? "" : "ml-1"} />
                                 {!isActive && <div className="absolute inset-0 rounded-full border border-blue-400 animate-ping opacity-20"></div>}
                             </button>
@@ -455,7 +438,7 @@
                                 </div>
                                 
                                 <div className="space-y-4 p-4 bg-white/5 rounded-2xl border border-white/5">
-                                    <label className="text-[10px] text-slate-400 uppercase tracking-widest">系统策略</label>
+                                    <label className="text-[10px] text-slate-400 uppercase tracking-widest">运行策略</label>
                                     <div className="grid grid-cols-2 gap-2 mt-2">
                                         {[{ id: 'background', label: '锁屏存活', icon: 'Shield' }, { id: 'wakelock', label: '屏幕常亮', icon: 'Zap' }].map(o => (
                                             <button key={o.id} onClick={() => setSettings(s => ({...s, runMode: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.runMode === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
@@ -466,7 +449,7 @@
                                 </div>
 
                                 <div className="space-y-2 pt-4 border-t border-white/5">
-                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">仿真环境音选择 (恒定音量)</label>
+                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">背景声音 (恒定音量)</label>
                                     <div className="grid grid-cols-2 gap-2 mt-2">
                                         {[ 
                                             { id: 'none', label: '完全安静', icon: 'Ban' }, 
@@ -511,7 +494,7 @@
                                         onClick={forceFullReload}
                                         className="mt-2 flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600/10 text-red-500 text-[10px] uppercase tracking-widest active:scale-95 border border-red-500/20"
                                     >
-                                        <Icon name="RotateCw" size={12} /> 强制强力同步 (解决所有缓存问题)
+                                        <Icon name="RotateCw" size={12} /> 强制强力同步 (解决缓存问题)
                                     </button>
                                 </div>
                             </div>
