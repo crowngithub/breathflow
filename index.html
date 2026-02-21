@@ -24,11 +24,14 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback } = React;
 
-        // 应用版本 v1.12.1 - 修复设置界面显示问题
-        const APP_VERSION = "1.12.1";
+        // 应用版本 v1.12.2 - 修复图标缺失导致的设置界面崩溃
+        const APP_VERSION = "1.12.2";
         const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
         const ACTIVE_SILENCE_B64 = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
 
+        /**
+         * 统一图标库 - 确保所有配置项使用的图标在此均有定义
+         */
         const Icon = ({ name, size = 24, className = "" }) => {
             const icons = {
                 Play: <path d="m5 3 14 9-14 9V3z"/>,
@@ -41,6 +44,9 @@
                 Minus: <path d="M5 12h14" />,
                 Clock: <><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
                 Bell: <><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></>,
+                Drum: <path d="M12 2v20M5 7l14 10M5 17l14-10" />,
+                Droplets: <path d="M7 16.3c2.2 0 4-1.8 4-4 0-3.3-4-8-4-8s-4 4.7-4 8c0 2.2 1.8 4 4 4Z" />,
+                Ban: <><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></>,
                 Info: <><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></>,
                 Sparkles: <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>,
                 Shield: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>,
@@ -85,7 +91,7 @@
             const nextScheduleTimeRef = useRef(0);
             const cycleStartTimeAudioRef = useRef(0);
             const keepAliveAudioTagRef = useRef(null);
-            const apiKey = ""; // 执行环境将提供 API KEY
+            const apiKey = ""; 
 
             const isActiveRef = useRef(isActive);
             useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
@@ -118,7 +124,6 @@
                 } catch (e) { window.location.reload(true); }
             };
 
-            // --- 硬件级排队调度函数 ---
             const scheduleTone = useCallback((targetTime) => {
                 if (settings.transitionSound === 'none' || !audioCtxRef.current) return;
                 const ctx = audioCtxRef.current;
@@ -188,7 +193,6 @@
                 setIsActive(true);
             };
 
-            // 调度核心：预排队时长可选
             useEffect(() => {
                 if (!isActive) return;
                 const ctx = audioCtxRef.current;
@@ -219,7 +223,6 @@
                 return () => clearInterval(scheduler);
             }, [isActive, settings.inhale, settings.hold, settings.exhale, settings.queueDuration, scheduleTone]);
 
-            // UI 渲染：自动校准音频时间
             useEffect(() => {
                 if (!isActive) return;
                 const animate = () => {
@@ -285,6 +288,16 @@
                     
                     <audio ref={keepAliveAudioTagRef} src={ACTIVE_SILENCE_B64} loop playsInline style={{display:'none'}} />
 
+                    {updateToast && (
+                        <div className="fixed top-12 left-1/2 -translate-x-1/2 z-[200] bg-blue-600 text-white px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-4 duration-500">
+                           <Icon name="CheckCircle" size={18} />
+                           <div className="flex flex-col text-left">
+                              <span className="text-sm font-bold tracking-wide">版本 v{APP_VERSION} 已激活</span>
+                              <span className="text-[10px] opacity-80">设置界面显示已修复</span>
+                           </div>
+                        </div>
+                    )}
+
                     {/* Header */}
                     <div className="w-full max-w-lg flex justify-between items-center z-20 pt-10 px-4">
                         <div className="flex flex-col">
@@ -327,7 +340,6 @@
                         </div>
                     </div>
 
-                    {/* 音量滑块 */}
                     <div className="w-full max-w-md space-y-6 z-20 mb-6 px-6">
                         <div className="flex flex-col gap-2">
                            <div className="flex justify-between items-center px-2">
@@ -366,6 +378,7 @@
                                     <p><span className="text-blue-400 font-bold">2. 添加到主屏幕：</span>点击 Safari 的分享按钮选择“添加到主屏幕”，以此模式运行体验最佳。</p>
                                     <p><span className="text-blue-400 font-bold">3. 硬件排队：</span>程序会提前调度未来长时间的音效，即使锁屏导致 JS 线程冻结，硬件仍能按时播放。</p>
                                 </div>
+                                <button onClick={() => setShowInfo(false)} className="w-full bg-blue-600 text-white rounded-2xl py-4 text-xs font-bold uppercase tracking-widest">我已了解</button>
                             </div>
                         </div>
                     )}
@@ -407,7 +420,18 @@
                                 </div>
                                 
                                 <div className="space-y-4 p-4 bg-white/5 rounded-2xl border border-white/5">
-                                    <label className="text-[10px] text-slate-400 uppercase tracking-widest">音效预排队时长 (Look-ahead)</label>
+                                    <label className="text-[10px] text-slate-400 uppercase tracking-widest">运行策略</label>
+                                    <div className="grid grid-cols-2 gap-2 mt-2">
+                                        {[{ id: 'background', label: '锁屏存活', icon: 'Shield' }, { id: 'wakelock', label: '屏幕常亮', icon: 'Zap' }].map(o => (
+                                            <button key={o.id} onClick={() => setSettings(s => ({...s, runMode: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.runMode === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
+                                                <Icon name={o.icon} size={16} /> <span className="text-[9px]">{o.label}</span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div className="space-y-2 pt-4 border-t border-white/5">
+                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">音效预排队时长</label>
                                     <div className="grid grid-cols-5 gap-1.5 mt-2">
                                         {[10, 20, 30, 45, 60].map(mins => (
                                             <button key={mins} onClick={() => setSettings(s => ({...s, queueDuration: mins}))} className={`py-2 rounded-lg text-[10px] font-mono border transition-all ${settings.queueDuration === mins ? 'bg-blue-600 border-blue-500 text-white' : 'bg-white/5 border-white/5 text-slate-500'}`}>
@@ -418,7 +442,7 @@
                                 </div>
 
                                 <div className="space-y-2 pt-4 border-t border-white/5">
-                                    <label className="text-[10px] text-slate-400 uppercase tracking-widest">转折音效选择</label>
+                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">转折音效选择</label>
                                     <div className="grid grid-cols-2 gap-2 mt-2">
                                         {[ { id: 'qing', label: '静心颂钵', icon: 'Bell' }, { id: 'muyu', label: '禅意木鱼', icon: 'Drum' }, { id: 'drop', label: '灵动水滴', icon: 'Droplets' }, { id: 'none', label: '无音效', icon: 'Ban' } ].map(o => (
                                             <button key={o.id} onClick={() => setSettings(s => ({...s, transitionSound: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.transitionSound === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
