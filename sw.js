@@ -3,7 +3,7 @@
  * 负责缓存网页资源及图标，实现类似原生 App 的秒开体验
  */
 
-const CACHE_NAME = 'breathflow-ai-v8';
+const CACHE_NAME = 'breathflow-ai-v10';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -47,3 +47,4 @@ self.addEventListener('fetch', (event) => {
     })
   );
 });
+
