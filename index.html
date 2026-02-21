@@ -24,8 +24,8 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback } = React;
 
-        // 应用版本 v1.12.0
-        const APP_VERSION = "1.12.0";
+        // 应用版本 v1.12.1 - 修复设置界面显示问题
+        const APP_VERSION = "1.12.1";
         const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
         const ACTIVE_SILENCE_B64 = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
 
@@ -42,6 +42,7 @@
                 Clock: <><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
                 Bell: <><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></>,
                 Info: <><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></>,
+                Sparkles: <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>,
                 Shield: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>,
                 Zap: <path d="M13 2 L3 14 L12 14 L11 22 L21 10 L12 10 L13 2 Z"/>,
                 RotateCw: <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>,
@@ -65,13 +66,18 @@
                 volume: 0.4, 
                 transitionSound: 'qing',    
                 runMode: 'background',
-                queueDuration: 20, // 预排队时长 (10, 20, 30, 45, 60 分钟)
+                queueDuration: 20, 
                 apiProxyUrl: DEFAULT_BASE_URL
             });
             const [elapsedTime, setElapsedTime] = useState(0);
             const [displayProgress, setDisplayProgress] = useState(0); 
             const [showSettings, setShowSettings] = useState(false);
             const [showInfo, setShowInfo] = useState(false);
+            const [showAI, setShowAI] = useState(false);
+            const [userMood, setUserMood] = useState("");
+            const [isAIThinking, setIsAIThinking] = useState(false);
+            const [aiSuggestion, setAiSuggestion] = useState(null);
+            const [updateToast, setUpdateToast] = useState(false);
 
             const audioCtxRef = useRef(null);
             const animationFrameRef = useRef(null);
@@ -79,16 +85,38 @@
             const nextScheduleTimeRef = useRef(0);
             const cycleStartTimeAudioRef = useRef(0);
             const keepAliveAudioTagRef = useRef(null);
-            
+            const apiKey = ""; // 执行环境将提供 API KEY
+
             const isActiveRef = useRef(isActive);
             useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
 
             // PWA 与版本管理
             useEffect(() => {
+                const lastVersion = localStorage.getItem('breathflow_version');
+                if (lastVersion && lastVersion !== APP_VERSION) {
+                    setUpdateToast(true);
+                    setTimeout(() => setUpdateToast(false), 5000);
+                }
+                localStorage.setItem('breathflow_version', APP_VERSION);
                 if ('serviceWorker' in navigator) {
                     navigator.serviceWorker.register('./sw.js').catch(() => {});
                 }
             }, []);
+
+            const forceFullReload = async () => {
+                try {
+                    if ('serviceWorker' in navigator) {
+                        const regs = await navigator.serviceWorker.getRegistrations();
+                        for (let reg of regs) await reg.unregister();
+                    }
+                    if ('caches' in window) {
+                        const keys = await caches.keys();
+                        for (let key of keys) await caches.delete(key);
+                    }
+                    localStorage.removeItem('breathflow_version');
+                    window.location.href = window.location.origin + window.location.pathname + '?sync=' + Date.now();
+                } catch (e) { window.location.reload(true); }
+            };
 
             // --- 硬件级排队调度函数 ---
             const scheduleTone = useCallback((targetTime) => {
@@ -127,7 +155,7 @@
                 if (isActive) {
                     setIsActive(false);
                     if (keepAliveAudioTagRef.current) keepAliveAudioTagRef.current.pause();
-                    if (wakeLockRef.current) { wakeLockRef.current.release(); wakeLockRef.current = null; }
+                    if (wakeLockRef.current) { try { await wakeLockRef.current.release(); } catch(e){} wakeLockRef.current = null; }
                     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
                     return;
                 }
@@ -174,9 +202,8 @@
                     if (!isActiveRef.current || !cCtx) return;
                     const now = cCtx.currentTime;
                     const totalSec = settings.inhale + settings.hold + settings.exhale;
-                    const queueLimitSec = settings.queueDuration * 60; // 将分钟转为秒
+                    const queueLimitSec = settings.queueDuration * 60; 
                     
-                    // 核心：根据设置的排队时长，提前将音效推入硬件队列
                     while (nextScheduleTimeRef.current < now + queueLimitSec) {
                         scheduleTone(nextScheduleTimeRef.current);
                         const elapsed = (nextScheduleTimeRef.current - cycleStartTimeAudioRef.current) % totalSec;
@@ -187,20 +214,18 @@
                         else nextIn = totalSec - elapsed;
                         nextScheduleTimeRef.current += Math.max(nextIn, 0.1);
                     }
-                }, 5000); // 降低 JS 唤醒频率，完全信任硬件队列
+                }, 5000);
                 
                 return () => clearInterval(scheduler);
             }, [isActive, settings.inhale, settings.hold, settings.exhale, settings.queueDuration, scheduleTone]);
 
-            // UI 渲染：自动校准音频时间 (解决锁屏解锁同步问题)
+            // UI 渲染：自动校准音频时间
             useEffect(() => {
                 if (!isActive) return;
                 const animate = () => {
                     const ctx = audioCtxRef.current;
                     if (!isActiveRef.current || !ctx) return;
                     const total = settings.inhale + settings.hold + settings.exhale;
-                    
-                    // 核心修复：UI 永远锚定硬件 currentTime，解锁瞬间自动校准相位
                     const elapsed = (ctx.currentTime - cycleStartTimeAudioRef.current) % total;
                     
                     let cPh = 'inhale', cPr = 0;
@@ -220,6 +245,27 @@
                 let t; if (isActive) t = setInterval(() => setElapsedTime(p => p + 1), 1000);
                 return () => clearInterval(t);
             }, [isActive]);
+
+            const callGemini = async (prompt, sys) => {
+                let delay = 1000;
+                const url = `${settings.apiProxyUrl}/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+                for (let i = 0; i < 5; i++) {
+                    try {
+                        const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], systemInstruction: { parts: [{ text: sys }] }, generationConfig: { responseMimeType: "application/json" } }) });
+                        const data = await res.json();
+                        return JSON.parse(data.candidates[0].content.parts[0].text);
+                    } catch (err) { if (i === 4) throw err; await new Promise(r => setTimeout(r, delay)); delay *= 2; }
+                }
+            };
+
+            const generateAISuggestion = async () => {
+                if (!userMood) return;
+                setIsAIThinking(true);
+                try {
+                    const res = await callGemini(`当前感受: ${userMood}`, "你是一位禅修大师。建议呼吸参数 JSON: { inhale:数字, hold:数字, exhale:数字, wisdom:短引导语 }。建议时长3-12秒。");
+                    setAiSuggestion(res);
+                } catch (e) { console.error(e); } finally { setIsAIThinking(false); }
+            };
 
             const adjustAll = (d) => {
                 setSettings(s => ({...s, inhale: Math.max(1, s.inhale + d), exhale: Math.max(1, s.exhale + d)}));
@@ -245,10 +291,11 @@
                             <h1 className="text-2xl font-extralight tracking-[0.4em] text-white">息道</h1>
                             <div className="flex items-center gap-2 mt-1">
                                 <div className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-green-500 animate-pulse' : 'bg-slate-600'}`}></div>
-                                <span className="text-[10px] text-slate-500 tracking-widest uppercase font-medium">Hardware Timeline</span>
+                                <span className="text-[10px] text-slate-500 tracking-widest uppercase font-medium">Hardware Sync</span>
                             </div>
                         </div>
                         <div className="flex items-center gap-3">
+                            <button onClick={() => setShowAI(true)} className="p-3 bg-blue-600/20 border border-blue-500/30 rounded-2xl text-blue-400 active:scale-95 shadow-lg"><Icon name="Sparkles" size={20}/></button>
                             <button onClick={() => setShowInfo(true)} className="p-3 bg-white/5 rounded-2xl text-slate-400 active:scale-95 shadow-lg"><Icon name="Info" size={20}/></button>
                             <button onClick={() => setShowSettings(true)} className="p-3 bg-white/5 rounded-2xl text-slate-400 active:scale-95 shadow-lg"><Icon name="Settings" size={20}/></button>
                         </div>
@@ -256,12 +303,6 @@
 
                     {/* Main UI Area */}
                     <div className="relative flex flex-col items-center justify-center flex-1 w-full scale-90 md:scale-100">
-                        {isActive && (
-                            <div className="absolute top-0 flex items-center gap-2 bg-blue-500/10 px-4 py-2 rounded-xl text-[9px] text-blue-400/80 tracking-widest uppercase animate-pulse z-30">
-                                <Icon name={settings.runMode === 'wakelock' ? "Zap" : "Shield"} size={10} />
-                                {settings.runMode === 'wakelock' ? "屏幕锁定：常亮" : `硬件排队中：未来 ${settings.queueDuration} 分钟`}
-                            </div>
-                        )}
                         <div className="absolute w-[500px] h-[500px] rounded-full blur-[100px] transition-all duration-1000" style={{ backgroundColor: color, opacity: opacity * 0.3 }}></div>
                         <div className="relative" style={{ transform: `scale(${scale})`, transition: 'transform 0.1s linear' }}>
                             <div className="w-48 h-48 md:w-64 md:h-64 rounded-full border-[1.5px] flex items-center justify-center bg-black/40 backdrop-blur-md transition-colors duration-1000 shadow-2xl" style={{ borderColor: `${color}${isActive ? '' : '33'}` }}>
@@ -281,7 +322,7 @@
                              <button onClick={() => adjustAll(1)} className="p-2 text-slate-500 active:scale-75"><Icon name="Plus" size={20} /></button>
                            </div>
                            <div className="text-center px-4 max-w-xs text-slate-500 text-[10px] tracking-[0.3em] uppercase leading-relaxed h-8">
-                             {phase === 'ready' ? "身定丹田，意随息转" : `当前阶段：${phase === 'inhale' ? '吸气' : phase === 'hold' ? '屏息' : '呼气'}`}
+                             {phase === 'ready' ? (aiSuggestion ? aiSuggestion.wisdom : "神定丹田，意随息转") : `当前阶段：${phase === 'inhale' ? '吸气' : phase === 'hold' ? '屏息' : '呼气'}`}
                            </div>
                         </div>
                     </div>
@@ -312,38 +353,51 @@
                         </div>
                     </div>
 
-                    {/* 信息须知弹窗 */}
+                    {/* 信息弹窗 */}
                     {showInfo && (
                         <div className="fixed inset-0 bg-black/95 backdrop-blur-xl z-[200] flex items-center justify-center p-6 animate-in">
                             <div className="bg-slate-900/90 w-full max-w-sm rounded-[2.5rem] border border-white/10 p-8 space-y-6 shadow-2xl overflow-y-auto max-h-[90vh]">
                                 <div className="flex justify-between items-center mb-2">
-                                    <h3 className="text-sm font-medium tracking-widest uppercase text-white">iOS 后台使用须知</h3>
+                                    <h3 className="text-sm font-medium tracking-widest uppercase text-white">使用须知</h3>
                                     <button onClick={() => setShowInfo(false)} className="text-[10px] text-slate-500 uppercase">关闭</button>
                                 </div>
-                                <div className="space-y-5 text-slate-300">
-                                    <div className="flex gap-4 items-start">
-                                        <Icon name="AlertCircle" size={18} className="text-red-500 mt-1 flex-shrink-0" />
-                                        <p className="text-xs leading-relaxed"><span className="text-white font-bold">物理静音键</span>：请确保 iPhone 左侧开关处于关闭状态（不显示红色）。若开启静音，锁屏后系统会切断所有网页声音。</p>
-                                    </div>
-                                    <div className="flex gap-4 items-start">
-                                        <Icon name="CheckCircle" size={18} className="text-blue-500 mt-1 flex-shrink-0" />
-                                        <p className="text-xs leading-relaxed"><span className="text-white font-bold">添加至主屏幕</span>：请点击 Safari 的“分享”按钮选择“添加到主屏幕”，以此模式运行可获得更高后台权限。</p>
-                                    </div>
-                                    <div className="flex gap-4 items-start">
-                                        <Icon name="Shield" size={18} className="text-emerald-500 mt-1 flex-shrink-0" />
-                                        <p className="text-xs leading-relaxed"><span className="text-white font-bold">后台调度机制</span>：程序采用“提前排队”技术。即便您锁屏，音效指令已提前推送到硬件层面，确保练习不中断。</p>
-                                    </div>
-                                    <div className="flex gap-4 items-start">
-                                        <Icon name="RotateCw" size={18} className="text-orange-500 mt-1 flex-shrink-0" />
-                                        <p className="text-xs leading-relaxed"><span className="text-white font-bold">自动校准</span>：锁屏期间 UI 动画会暂停以节能。解锁返回时，画面会根据硬件时钟自动校准，瞬间同步进度。</p>
-                                    </div>
+                                <div className="space-y-4 text-slate-300 text-xs leading-relaxed">
+                                    <p><span className="text-blue-400 font-bold">1. 物理静音键：</span>确保 iPhone 左侧静音键已关闭（不显示红色），否则锁屏后无法发声。</p>
+                                    <p><span className="text-blue-400 font-bold">2. 添加到主屏幕：</span>点击 Safari 的分享按钮选择“添加到主屏幕”，以此模式运行体验最佳。</p>
+                                    <p><span className="text-blue-400 font-bold">3. 硬件排队：</span>程序会提前调度未来长时间的音效，即使锁屏导致 JS 线程冻结，硬件仍能按时播放。</p>
                                 </div>
-                                <button onClick={() => setShowInfo(false)} className="w-full bg-blue-600 text-white rounded-2xl py-4 text-xs font-bold uppercase tracking-widest active:scale-95 transition-all">我已了解</button>
                             </div>
                         </div>
                     )}
 
-                    {/* 配置弹窗 */}
+                    {/* AI 智引弹窗 */}
+                    {showAI && (
+                        <div className="fixed inset-0 bg-black/95 backdrop-blur-xl z-[110] flex items-center justify-center p-6 animate-in">
+                            <div className="bg-slate-900/90 w-full max-w-sm rounded-[2.5rem] border border-white/10 p-8 space-y-6 shadow-2xl overflow-y-auto max-h-[90vh]">
+                                <div className="flex justify-between items-center mb-2">
+                                    <div className="flex items-center gap-2"><Icon name="Sparkles" size={16} className="text-blue-400" /><h3 className="text-sm font-medium tracking-widest uppercase text-white">AI 智引</h3></div>
+                                    <button onClick={() => setShowAI(false)} className="text-[10px] text-slate-500 uppercase">关闭</button>
+                                </div>
+                                <div className="space-y-4">
+                                    <textarea value={userMood} onChange={(e) => setUserMood(e.target.value)} placeholder="描述您的状态..." className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-sm font-light h-24 outline-none focus:border-blue-500/50 transition-all text-white placeholder:text-slate-600" />
+                                    <button onClick={generateAISuggestion} disabled={isAIThinking || !userMood} className="w-full bg-blue-600 text-white rounded-2xl py-4 text-xs font-bold uppercase tracking-widest shadow-lg active:scale-95 disabled:opacity-50 transition-all flex items-center justify-center gap-2">
+                                        {isAIThinking ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> : "✨ 开启智引"}
+                                    </button>
+                                </div>
+                                {aiSuggestion && (
+                                    <div className="pt-6 border-t border-white/5 space-y-4">
+                                        <div className="bg-blue-600/10 p-4 rounded-2xl border border-blue-500/20">
+                                            <p className="text-[10px] text-blue-400 uppercase mb-1">建议频率</p>
+                                            <p className="text-base font-light tabular-nums">吸 {aiSuggestion.inhale}s / 屏 {aiSuggestion.hold}s / 呼 {aiSuggestion.exhale}s</p>
+                                        </div>
+                                        <button onClick={() => { setSettings(p => ({...p, inhale: aiSuggestion.inhale, hold: aiSuggestion.hold, exhale: aiSuggestion.exhale})); setShowAI(false); }} className="w-full bg-white text-black rounded-2xl py-4 text-xs font-bold uppercase tracking-widest">应用参数</button>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* 设置弹窗 */}
                     {showSettings && (
                         <div className="fixed inset-0 bg-black/95 backdrop-blur-xl z-[100] flex items-center justify-center p-6 animate-in">
                             <div className="bg-slate-900/90 w-full max-w-sm rounded-[2.5rem] border border-white/10 p-8 space-y-6 shadow-2xl overflow-y-auto max-h-[90vh]">
@@ -353,19 +407,7 @@
                                 </div>
                                 
                                 <div className="space-y-4 p-4 bg-white/5 rounded-2xl border border-white/5">
-                                    <label className="text-[10px] text-slate-400 uppercase tracking-widest">运行策略</label>
-                                    <div className="grid grid-cols-2 gap-2 mt-2">
-                                        {[{ id: 'background', label: '锁屏存活', icon: 'Shield' }, { id: 'wakelock', label: '屏幕常亮', icon: 'Zap' }].map(o => (
-                                            <button key={o.id} onClick={() => setSettings(s => ({...s, runMode: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.runMode === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
-                                                <Icon name={o.icon} size={16} /> <span className="text-[9px]">{o.label}</span>
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
-
-                                {/* 1. 预排队时长选项 */}
-                                <div className="space-y-2 pt-4 border-t border-white/5">
-                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest flex items-center gap-2">音效预排队时长 (Look-ahead)</label>
+                                    <label className="text-[10px] text-slate-400 uppercase tracking-widest">音效预排队时长 (Look-ahead)</label>
                                     <div className="grid grid-cols-5 gap-1.5 mt-2">
                                         {[10, 20, 30, 45, 60].map(mins => (
                                             <button key={mins} onClick={() => setSettings(s => ({...s, queueDuration: mins}))} className={`py-2 rounded-lg text-[10px] font-mono border transition-all ${settings.queueDuration === mins ? 'bg-blue-600 border-blue-500 text-white' : 'bg-white/5 border-white/5 text-slate-500'}`}>
@@ -373,11 +415,10 @@
                                             </button>
                                         ))}
                                     </div>
-                                    <p className="text-[8px] text-slate-600 italic mt-1">设置后，即便锁屏导致JS停止运行，硬件仍能按计划发声。</p>
                                 </div>
 
                                 <div className="space-y-2 pt-4 border-t border-white/5">
-                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">转折音效选择</label>
+                                    <label className="text-[10px] text-slate-400 uppercase tracking-widest">转折音效选择</label>
                                     <div className="grid grid-cols-2 gap-2 mt-2">
                                         {[ { id: 'qing', label: '静心颂钵', icon: 'Bell' }, { id: 'muyu', label: '禅意木鱼', icon: 'Drum' }, { id: 'drop', label: '灵动水滴', icon: 'Droplets' }, { id: 'none', label: '无音效', icon: 'Ban' } ].map(o => (
                                             <button key={o.id} onClick={() => setSettings(s => ({...s, transitionSound: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.transitionSound === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
@@ -401,9 +442,9 @@
                                 </div>
                                 
                                 <div className="pt-8 border-t border-white/5 flex flex-col items-center gap-2 text-slate-600">
-                                    <span className="text-[9px] uppercase tracking-tighter">BreathFlow v{APP_VERSION} Hardware Optimized</span>
+                                    <span className="text-[9px] uppercase tracking-tighter">BreathFlow v{APP_VERSION}</span>
                                     <button onClick={forceFullReload} className="mt-2 flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600/10 text-red-500 text-[10px] uppercase tracking-widest active:scale-95 border border-red-500/20">
-                                        <Icon name="RotateCw" size={12} /> 强制同步与清缓存
+                                        <Icon name="RotateCw" size={12} /> 强制同步重载
                                     </button>
                                 </div>
                             </div>
