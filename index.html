@@ -24,8 +24,8 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback } = React;
 
-        // 应用版本 v1.8.3
-        const APP_VERSION = "1.8.3";
+        // 应用版本 v1.9.1 - 修复 ServiceWorker 注册错误
+        const APP_VERSION = "1.9.1";
         const apiKey = ""; 
         const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
 
@@ -48,9 +48,9 @@
                 Droplets: <path d="M7 16.3c2.2 0 4-1.8 4-4 0-3.3-4-8-4-8s-4 4.7-4 8c0 2.2 1.8 4 4 4Z" />,
                 Ban: <><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></>,
                 Sparkles: <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>,
-                Globe: <><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></>,
                 Shield: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>,
-                Zap: <path d="M13 2 L3 14 L12 14 L11 22 L21 10 L12 10 L13 2 Z"/>
+                Zap: <path d="M13 2 L3 14 L12 14 L11 22 L21 10 L12 10 L13 2 Z"/>,
+                Check: <path d="M20 6 9 17l-5-5"/>
             };
             return (
                 <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -80,13 +80,11 @@
             const [userMood, setUserMood] = useState("");
             const [isAIThinking, setIsAIThinking] = useState(false);
             const [aiSuggestion, setAiSuggestion] = useState(null);
+            const [updateToast, setUpdateToast] = useState(false);
 
             const audioCtxRef = useRef(null);
             const windGainRef = useRef(null);
             const bgMainGainRef = useRef(null);
-            const bgWhiteGainRef = useRef(null);
-            const bgBrownGainRef = useRef(null);
-            const bgFilterRef = useRef(null);
             const keepAliveNodeRef = useRef(null);
             const animationFrameRef = useRef(null);
             const wakeLockRef = useRef(null);
@@ -96,12 +94,41 @@
             const isActiveRef = useRef(isActive);
             useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
 
+            // --- 核心修复：更鲁棒的 ServiceWorker 注册逻辑 ---
             useEffect(() => {
-                if ('serviceWorker' in navigator && (window.location.protocol === 'https:' || window.location.hostname === 'localhost')) {
-                    navigator.serviceWorker.register('./sw.js').catch(() => {});
+                // 1. 检查版本是否升级
+                const lastVersion = localStorage.getItem('breathflow_version');
+                if (lastVersion && lastVersion !== APP_VERSION) {
+                    setUpdateToast(true);
+                    setTimeout(() => setUpdateToast(false), 5000);
+                }
+                localStorage.setItem('breathflow_version', APP_VERSION);
+
+                // 2. 环境兼容性校验
+                const isSupportedOrigin = ['https:', 'http:'].includes(window.location.protocol);
+                
+                if ('serviceWorker' in navigator && isSupportedOrigin) {
+                    navigator.serviceWorker.register('./sw.js')
+                        .then(reg => {
+                            reg.onupdatefound = () => {
+                                const installingWorker = reg.installing;
+                                if (installingWorker) {
+                                    installingWorker.onstatechange = () => {
+                                        if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                                            window.location.reload();
+                                        }
+                                    };
+                                }
+                            };
+                        })
+                        .catch(err => {
+                            // 静默失败，不阻塞 React 渲染
+                            console.warn('ServiceWorker 注册跳过 (非标准 Web 环境或脚本缺失):', err.message);
+                        });
                 }
             }, []);
 
+            // 常亮锁
             const toggleWakeLock = async (enable) => {
                 if ('wakeLock' in navigator) {
                     try {
@@ -118,7 +145,6 @@
             useEffect(() => {
                 if (isActive && settings.runMode === 'wakelock') toggleWakeLock(true);
                 else toggleWakeLock(false);
-                return () => toggleWakeLock(false);
             }, [isActive, settings.runMode]);
 
             const scheduleTone = useCallback((time) => {
@@ -151,6 +177,7 @@
                 }
             }, [settings.transitionSound, settings.volume]);
 
+            // 后台保活机制
             useEffect(() => {
                 if (!isActive) {
                     if (keepAliveNodeRef.current) { keepAliveNodeRef.current.stop(); keepAliveNodeRef.current = null; }
@@ -162,7 +189,7 @@
                 nextScheduleTimeRef.current = ctx.currentTime;
 
                 const osc = ctx.createOscillator(); const gain = ctx.createGain();
-                osc.frequency.value = 1.5; gain.gain.value = 0.0001;
+                osc.frequency.value = 1.0; gain.gain.value = 0.0001;
                 osc.connect(gain); gain.connect(ctx.destination);
                 osc.start(); keepAliveNodeRef.current = osc;
 
@@ -171,13 +198,13 @@
                     if (!isActiveRef.current || !currentCtx) return;
                     const now = currentCtx.currentTime;
                     const totalSec = (settings.inhale || 4) + (settings.hold || 0) + (settings.exhale || 4);
-                    if (nextScheduleTimeRef.current < now + 0.2) {
+                    if (nextScheduleTimeRef.current < now + 0.3) {
                         scheduleTone(nextScheduleTimeRef.current);
                         const elapsed = (nextScheduleTimeRef.current - cycleStartTimeAudioRef.current) % totalSec;
                         let nextIn;
                         const iS = settings.inhale, hS = settings.hold;
-                        if (elapsed < iS - 0.01) nextIn = iS - elapsed;
-                        else if (elapsed < iS + hS - 0.01) nextIn = (iS + hS) - elapsed;
+                        if (elapsed < iS - 0.02) nextIn = iS - elapsed;
+                        else if (elapsed < iS + hS - 0.02) nextIn = (iS + hS) - elapsed;
                         else nextIn = totalSec - elapsed;
                         nextScheduleTimeRef.current += Math.max(nextIn, 0.1);
                     }
@@ -185,6 +212,7 @@
                 return () => clearInterval(timer);
             }, [isActive, settings.inhale, settings.hold, settings.exhale, scheduleTone]);
 
+            // UI 同步
             useEffect(() => {
                 if (!isActive) {
                    const now = audioCtxRef.current?.currentTime || 0;
@@ -249,8 +277,7 @@
 
             const callGemini = async (prompt, sys) => {
                 let delay = 1000;
-                const baseUrl = settings.apiProxyUrl || DEFAULT_BASE_URL;
-                const url = `${baseUrl}/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+                const url = `${settings.apiProxyUrl}/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
                 for (let i = 0; i < 5; i++) {
                     try {
                         const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], systemInstruction: { parts: [{ text: sys }] }, generationConfig: { responseMimeType: "application/json" } }) });
@@ -284,12 +311,22 @@
 
             return (
                 <div className="min-h-screen bg-[#010204] text-slate-200 flex flex-col items-center justify-between p-6 overflow-hidden select-none font-sans antialiased">
+                    
+                    {/* 更新提示 Toast */}
+                    {updateToast && (
+                        <div className="fixed top-12 left-1/2 -translate-x-1/2 z-[200] bg-blue-600 text-white px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-4 duration-500">
+                           <Icon name="Check" size={18} />
+                           <span className="text-sm font-medium tracking-wide">版本已自动升级至 v{APP_VERSION}</span>
+                        </div>
+                    )}
+
+                    {/* Header */}
                     <div className="w-full max-w-lg flex justify-between items-center z-20 pt-10 px-4">
                         <div className="flex flex-col">
                             <h1 className="text-2xl font-extralight tracking-[0.4em] text-white">息道</h1>
                             <div className="flex items-center gap-2 mt-1">
                                 <div className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-green-500 animate-pulse' : 'bg-slate-600'}`}></div>
-                                <span className="text-[10px] text-slate-500 tracking-widest uppercase font-medium">v{APP_VERSION} Full Fixed</span>
+                                <span className="text-[10px] text-slate-500 tracking-widest uppercase font-medium">Nature AI Mode</span>
                             </div>
                         </div>
                         <div className="flex items-center gap-3">
@@ -298,11 +335,12 @@
                         </div>
                     </div>
 
+                    {/* Main UI Area */}
                     <div className="relative flex flex-col items-center justify-center flex-1 w-full scale-90 md:scale-100">
                         {isActive && (
                             <div className="absolute top-0 flex items-center gap-2 bg-blue-500/10 px-4 py-2 rounded-xl text-[9px] text-blue-400/80 tracking-widest uppercase animate-pulse z-30">
                                 <Icon name={settings.runMode === 'wakelock' ? "Zap" : "Shield"} size={10} />
-                                {settings.runMode === 'wakelock' ? "常亮模式：禁止休眠" : "背景存活：息屏不休眠"}
+                                {settings.runMode === 'wakelock' ? "锁定屏幕常亮" : "后台音频持续调度中"}
                             </div>
                         )}
                         <div className="absolute w-[500px] h-[500px] rounded-full blur-[100px] transition-all duration-1000" style={{ backgroundColor: color, opacity: opacity * 0.3 }}></div>
@@ -314,21 +352,22 @@
                             </div>
                         </div>
                         
-                        <div className="mt-16 flex flex-col items-center gap-6 z-10">
+                        <div className="mt-16 flex flex-col items-center gap-6 z-10 w-full">
                            <div className="flex items-center gap-8 bg-white/[0.03] p-1.5 px-4 rounded-full border border-white/5 backdrop-blur-sm shadow-inner transition-all hover:bg-white/5">
                              <button onClick={() => adjustAll(-1)} className="p-2 text-slate-500 active:scale-75"><Icon name="Minus" size={20} /></button>
                              <div className="flex flex-col items-center min-w-[100px]">
-                               <span className="text-[10px] uppercase tracking-widest text-slate-600 mb-0.5 font-bold">周期时长</span>
+                               <span className="text-[10px] uppercase tracking-widest text-slate-600 mb-0.5 font-bold">呼吸周期</span>
                                <span className="text-lg font-light tabular-nums text-blue-400">{settings.inhale}s <span className="text-slate-600">/</span> {settings.exhale}s</span>
                              </div>
                              <button onClick={() => adjustAll(1)} className="p-2 text-slate-500 active:scale-75"><Icon name="Plus" size={20} /></button>
                            </div>
-                        </div>
-                        <div className="mt-10 text-center z-10 px-4 max-w-xs text-slate-500 text-[10px] tracking-[0.3em] uppercase leading-relaxed h-8">
-                            {phase === 'ready' ? (aiSuggestion ? aiSuggestion.wisdom : "神定丹田，意随息转") : `当前阶段：${phase === 'inhale' ? '吸气' : phase === 'hold' ? '屏息' : '呼气'}`}
+                           <div className="text-center px-4 max-w-xs text-slate-500 text-[10px] tracking-[0.3em] uppercase leading-relaxed h-8">
+                             {phase === 'ready' ? (aiSuggestion ? aiSuggestion.wisdom : "神定丹田，意随息转") : `当前阶段：${phase === 'inhale' ? '吸气' : phase === 'hold' ? '屏息' : '呼气'}`}
+                           </div>
                         </div>
                     </div>
 
+                    {/* 音量滑块 */}
                     <div className="w-full max-w-md space-y-6 z-20 mb-6 px-6">
                         <div className="flex flex-col gap-2">
                            <div className="flex justify-between items-center px-2">
@@ -342,7 +381,7 @@
                         </div>
 
                         <div className="bg-white/[0.03] backdrop-blur-2xl border border-white/10 rounded-[2.5rem] p-4 flex items-center justify-around shadow-2xl">
-                            <button onClick={() => { setIsActive(false); setElapsedTime(0); setPhase('ready'); stopAudio(); }} className="p-4 rounded-full bg-white/5 text-slate-500 active:scale-90"><Icon name="RotateCcw" size={22} /></button>
+                            <button onClick={() => { setIsActive(false); setElapsedTime(0); setPhase('ready'); setDisplayProgress(0); stopAudio(); }} className="p-4 rounded-full bg-white/5 text-slate-500 active:scale-90"><Icon name="RotateCcw" size={22} /></button>
                             <button onClick={() => { if (!isActive) initAudio(); setIsActive(!isActive); }} className={`p-8 rounded-full transition-all active:scale-95 shadow-2xl relative ${isActive ? 'bg-white text-black' : 'bg-blue-600 text-white shadow-blue-600/30'}`}>
                                 <Icon name={isActive ? "Pause" : "Play"} size={32} className={isActive ? "" : "ml-1"} />
                                 {!isActive && <div className="absolute inset-0 rounded-full border border-blue-400 animate-ping opacity-20"></div>}
@@ -354,6 +393,7 @@
                         </div>
                     </div>
 
+                    {/* AI 智引弹窗 */}
                     {showAI && (
                         <div className="fixed inset-0 bg-black/95 backdrop-blur-xl z-[110] flex items-center justify-center p-6 animate-in">
                             <div className="bg-slate-900/90 w-full max-w-sm rounded-[2.5rem] border border-white/10 p-8 space-y-6 shadow-2xl overflow-y-auto max-h-[90vh]">
@@ -381,6 +421,7 @@
                         </div>
                     )}
 
+                    {/* 配置弹窗 */}
                     {showSettings && (
                         <div className="fixed inset-0 bg-black/95 backdrop-blur-xl z-[100] flex items-center justify-center p-6 animate-in">
                             <div className="bg-slate-900/90 w-full max-w-sm rounded-[2.5rem] border border-white/10 p-8 space-y-6 shadow-2xl max-h-[90vh] overflow-y-auto">
@@ -392,10 +433,7 @@
                                 <div className="space-y-4 p-4 bg-white/5 rounded-2xl border border-white/5">
                                     <label className="text-[10px] text-slate-400 uppercase tracking-widest">系统策略</label>
                                     <div className="grid grid-cols-2 gap-2 mt-2">
-                                        {[
-                                            { id: 'background', label: '锁屏存活', icon: 'Shield' },
-                                            { id: 'wakelock', label: '屏幕常亮', icon: 'Zap' }
-                                        ].map(o => (
+                                        {[{ id: 'background', label: '锁屏存活', icon: 'Shield' }, { id: 'wakelock', label: '屏幕常亮', icon: 'Zap' }].map(o => (
                                             <button key={o.id} onClick={() => setSettings(s => ({...s, runMode: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.runMode === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
                                                 <Icon name={o.icon} size={16} /> <span className="text-[9px]">{o.label}</span>
                                             </button>
@@ -404,12 +442,7 @@
                                 </div>
 
                                 <div className="space-y-2 pt-4 border-t border-white/5">
-                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest text-blue-400/80 flex items-center gap-2"><Icon name="Globe" size={10} /> API 代理</label>
-                                    <input type="text" value={settings.apiProxyUrl} onChange={(e) => setSettings(s => ({...s, apiProxyUrl: e.target.value}))} placeholder="https://..." className="w-full bg-white/5 border border-white/10 rounded-xl p-2.5 text-[10px] font-mono text-slate-300 outline-none" />
-                                </div>
-
-                                <div className="space-y-2 pt-4 border-t border-white/5">
-                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">背景声音</label>
+                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">背景环境声</label>
                                     <div className="grid grid-cols-3 gap-2 mt-2">
                                         {[ { id: 'none', label: '无', icon: 'Ban' }, { id: 'stream', label: '流水', icon: 'Waves' }, { id: 'rain', label: '细雨', icon: 'CloudRain' } ].map(o => (
                                             <button key={o.id} onClick={() => setSettings(s => ({...s, bgType: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.bgType === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
@@ -420,7 +453,7 @@
                                 </div>
 
                                 <div className="space-y-2 pt-4 border-t border-white/5">
-                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">转折音效</label>
+                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">转折音效选择</label>
                                     <div className="grid grid-cols-2 gap-2 mt-2">
                                         {[ { id: 'qing', label: '静心颂钵', icon: 'Bell' }, { id: 'muyu', label: '禅意木鱼', icon: 'Drum' }, { id: 'drop', label: '灵动水滴', icon: 'Droplets' }, { id: 'none', label: '无音效', icon: 'Ban' } ].map(o => (
                                             <button key={o.id} onClick={() => setSettings(s => ({...s, transitionSound: o.id}))} className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all ${settings.transitionSound === o.id ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500'}`}>
@@ -443,9 +476,9 @@
                                     ))}
                                 </div>
                                 
-                                <div className="pt-8 border-t border-white/5 flex flex-col items-center gap-2">
-                                    <span className="text-[9px] text-slate-600 uppercase tracking-tighter">v{APP_VERSION} Full Fixed</span>
-                                    <button onClick={() => window.location.reload(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/5 text-slate-500 text-[10px] uppercase tracking-widest active:scale-95">强制重载</button>
+                                <div className="pt-8 border-t border-white/5 flex flex-col items-center gap-2 text-slate-600">
+                                    <span className="text-[9px] uppercase tracking-tighter">BreathFlow v{APP_VERSION} Stable</span>
+                                    <button onClick={() => window.location.reload(true)} className="mt-2 flex items-center gap-2 px-4 py-2 rounded-xl bg-white/5 text-slate-500 text-[10px] uppercase tracking-widest active:scale-95">重载应用</button>
                                 </div>
                             </div>
                         </div>
