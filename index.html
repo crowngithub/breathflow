@@ -24,7 +24,8 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback } = React;
 
-        const APP_VERSION = "1.8.1";
+        // 应用版本 v1.8.2
+        const APP_VERSION = "1.8.2";
         const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
 
         /**
@@ -62,22 +63,20 @@
         const easeInOutSine = (x) => -(Math.cos(Math.PI * x) - 1) / 2;
 
         const App = () => {
-            // --- 核心状态 ---
             const [isActive, setIsActive] = useState(false);
             const [phase, setPhase] = useState('ready'); 
             const [settings, setSettings] = useState({
                 inhale: 4, hold: 0, exhale: 4,
                 volume: 0.4, 
-                bgType: 'none',             // 默认：无背景音乐
-                transitionSound: 'qing',    // 默认：颂钵音效
-                runMode: 'background',      // 默认：锁屏存活方案
+                bgType: 'none',             
+                transitionSound: 'qing',    
+                runMode: 'background',      
                 vibrationEnabled: true
             });
             const [elapsedTime, setElapsedTime] = useState(0);
             const [displayProgress, setDisplayProgress] = useState(0); 
             const [showSettings, setShowSettings] = useState(false);
 
-            // --- 引用管理 ---
             const audioCtxRef = useRef(null);
             const windGainRef = useRef(null);
             const bgMainGainRef = useRef(null);
@@ -90,19 +89,24 @@
             const isActiveRef = useRef(isActive);
             useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
 
-            // --- 常亮锁 (Wake Lock) 修复 ---
+            // PWA 离线支持
+            useEffect(() => {
+                if ('serviceWorker' in navigator && (window.location.protocol === 'https:' || window.location.hostname === 'localhost')) {
+                    navigator.serviceWorker.register('./sw.js').catch(() => {});
+                }
+            }, []);
+
+            // 常亮锁逻辑
             const toggleWakeLock = async (enable) => {
                 if ('wakeLock' in navigator) {
                     try {
                         if (enable && !wakeLockRef.current) {
                             wakeLockRef.current = await navigator.wakeLock.request('screen');
-                            console.log('屏幕锁定成功');
                         } else if (!enable && wakeLockRef.current) {
                             await wakeLockRef.current.release();
                             wakeLockRef.current = null;
-                            console.log('屏幕锁定释放');
                         }
-                    } catch (err) { console.warn('常亮锁操作失败:', err); }
+                    } catch (err) {}
                 }
             };
 
@@ -112,7 +116,7 @@
                 return () => toggleWakeLock(false);
             }, [isActive, settings.runMode]);
 
-            // --- 核心修复：锁屏存活音效调度 ---
+            // 核心修复：锁屏存活音效调度
             const scheduleTone = useCallback((time) => {
                 if (settings.transitionSound === 'none' || !audioCtxRef.current) return;
                 const ctx = audioCtxRef.current;
@@ -143,25 +147,26 @@
                 }
             }, [settings.transitionSound, settings.volume]);
 
-            // --- 锁屏保活时钟 (Scheduler) ---
+            // 锁屏保活时钟 (修复 capture null 的问题)
             useEffect(() => {
                 if (!isActive) {
                     if (keepAliveNodeRef.current) { keepAliveNodeRef.current.stop(); keepAliveNodeRef.current = null; }
                     return;
                 }
                 const ctx = audioCtxRef.current;
+                if (!ctx) return;
                 cycleStartTimeAudioRef.current = ctx.currentTime;
                 nextScheduleTimeRef.current = ctx.currentTime;
 
-                // 超低频静默震荡，维持 iOS 硬件音频进程
                 const osc = ctx.createOscillator(); const gain = ctx.createGain();
                 osc.frequency.value = 1.5; gain.gain.value = 0.0001;
                 osc.connect(gain); gain.connect(ctx.destination);
                 osc.start(); keepAliveNodeRef.current = osc;
 
                 const timer = setInterval(() => {
-                    if (!isActiveRef.current) return;
-                    const now = ctx.currentTime;
+                    const currentCtx = audioCtxRef.current; // 实时获取 ref，避免 null
+                    if (!isActiveRef.current || !currentCtx) return;
+                    const now = currentCtx.currentTime;
                     const totalSec = settings.inhale + settings.hold + settings.exhale;
                     if (nextScheduleTimeRef.current < now + 0.2) {
                         scheduleTone(nextScheduleTimeRef.current);
@@ -177,7 +182,7 @@
                 return () => clearInterval(timer);
             }, [isActive, settings.inhale, settings.hold, settings.exhale, scheduleTone]);
 
-            // --- 动画与实时音效同步 ---
+            // 动画与实时音效
             useEffect(() => {
                 if (!isActive) {
                    const now = audioCtxRef.current?.currentTime || 0;
@@ -185,8 +190,8 @@
                    return;
                 }
                 const animate = () => {
-                    if (!isActiveRef.current) return;
                     const ctx = audioCtxRef.current;
+                    if (!isActiveRef.current || !ctx) return;
                     const total = settings.inhale + settings.hold + settings.exhale;
                     const elapsed = (ctx.currentTime - cycleStartTimeAudioRef.current) % total;
                     
@@ -216,13 +221,11 @@
                 return () => cancelAnimationFrame(animationFrameRef.current);
             }, [isActive, settings.inhale, settings.hold, settings.exhale, settings.bgType, settings.volume]);
 
-            // 计时器
             useEffect(() => {
                 let t; if (isActive) t = setInterval(() => setElapsedTime(p => p + 1), 1000);
                 return () => clearInterval(t);
             }, [isActive]);
 
-            // --- 核心功能函数 ---
             const initAudio = () => {
                 if (audioCtxRef.current) { if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume(); return; }
                 try {
@@ -232,16 +235,13 @@
                     const whiteBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
                     const wD = whiteBuffer.getChannelData(0);
                     for (let i = 0; i < bufferSize; i++) wD[i] = Math.random() * 2 - 1;
-                    
                     const wSrc = ctx.createBufferSource(); wSrc.buffer = whiteBuffer; wSrc.loop = true;
                     const wF = ctx.createBiquadFilter(); wF.type = 'lowpass'; wF.frequency.value = 400;
                     const wG = ctx.createGain(); wG.gain.value = 0;
                     wSrc.connect(wF); wF.connect(wG); wG.connect(ctx.destination); wSrc.start();
                     windGainRef.current = wG;
-                    
                     const bgMainG = ctx.createGain(); bgMainG.gain.value = 0;
-                    bgMainG.connect(ctx.destination);
-                    bgMainGainRef.current = bgMainG;
+                    bgMainG.connect(ctx.destination); bgMainGainRef.current = bgMainG;
                 } catch (e) { console.error(e); }
             };
 
@@ -260,7 +260,6 @@
 
             return (
                 <div className="min-h-screen bg-[#010204] text-slate-200 flex flex-col items-center justify-between p-6 overflow-hidden select-none font-sans antialiased">
-                    
                     {/* Header */}
                     <div className="w-full max-w-lg flex justify-between items-center z-20 pt-10 px-4">
                         <div className="flex flex-col">
@@ -290,7 +289,6 @@
                             </div>
                         </div>
                         
-                        {/* 1. 恢复：面板加减描述界面 */}
                         <div className="mt-16 flex flex-col items-center gap-6 z-10">
                            <div className="flex items-center gap-8 bg-white/[0.03] p-1.5 px-4 rounded-full border border-white/5 backdrop-blur-sm shadow-inner transition-all hover:bg-white/5">
                              <button onClick={() => adjustAll(-1)} className="p-2 text-slate-500 active:scale-75"><Icon name="Minus" size={20} /></button>
@@ -303,7 +301,7 @@
                         </div>
                     </div>
 
-                    {/* 2. 恢复：音量调节滑块 */}
+                    {/* 音量滑块 */}
                     <div className="w-full max-w-md space-y-6 z-20 mb-6 px-6">
                         <div className="flex flex-col gap-2">
                            <div className="flex justify-between items-center px-2">
@@ -339,7 +337,7 @@
                                 </div>
                                 
                                 <div className="space-y-4 p-4 bg-white/5 rounded-2xl border border-white/5">
-                                    <label className="text-[10px] text-slate-400 uppercase tracking-widest flex items-center gap-2">系统运行策略</label>
+                                    <label className="text-[10px] text-slate-400 uppercase tracking-widest">系统策略</label>
                                     <div className="grid grid-cols-2 gap-2 mt-2">
                                         {[
                                             { id: 'background', label: '锁屏存活', icon: 'Shield' },
@@ -352,9 +350,8 @@
                                     </div>
                                 </div>
 
-                                {/* 3. 恢复：设置中背景声音选项 */}
                                 <div className="space-y-2 pt-4 border-t border-white/5">
-                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">背景声音环境</label>
+                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">背景声音</label>
                                     <div className="grid grid-cols-3 gap-2 mt-2">
                                         {[
                                             { id: 'none', label: '无', icon: 'Ban' },
@@ -369,7 +366,7 @@
                                 </div>
 
                                 <div className="space-y-2 pt-4 border-t border-white/5">
-                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">转折提示音 (硬件调度)</label>
+                                    <label className="text-[10px] text-slate-500 uppercase tracking-widest">转折音效</label>
                                     <div className="grid grid-cols-2 gap-2 mt-2">
                                         {[
                                             { id: 'qing', label: '静心颂钵', icon: 'Bell' },
